@@ -34,7 +34,7 @@ param(
 )
 
 $AppName    = 'Limpiador de Windows'
-$AppVersion = '1.1.0'
+$AppVersion = '1.1.1'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
