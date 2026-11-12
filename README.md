@@ -6,6 +6,8 @@ Es un único script de PowerShell con interfaz gráfica: no hay que instalar nad
 
 **[⬇️ Descargar la última versión](https://github.com/vicvinue/limpiador-windows/releases/latest)**
 
+![Pestaña Archivos basura del Limpiador de Windows](docs/captura-limpieza.png)
+
 > *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools and find large files. Every change is conservative and reversible. UI is in Spanish.
 
 ---
@@ -43,6 +45,8 @@ Detecta el tipo de equipo (sobremesa, portátil o máquina virtual), el tipo de 
 - **Desactivar la hibernación**: libera varios GB; es reversible.
 
 Todo ajuste guarda su valor original y se puede revertir con **Deshacer ajustes**.
+
+![Pestaña Optimizar del Limpiador de Windows](docs/captura-optimizar.png)
 
 ### 📊 Espacio
 Analizador de las carpetas y los archivos más grandes de tu perfil, de Descargas, de una unidad o de cualquier carpeta.

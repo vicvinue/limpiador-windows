@@ -1094,7 +1094,7 @@ $tabs.TabPages.AddRange(@($tabClean, $tabBloat, $tabOpt, $tabSpace))
 # ---------- Descripción
 $lblDesc = New-Object System.Windows.Forms.Label
 $lblDesc.Dock = 'Bottom'
-$lblDesc.Height = S 52
+$lblDesc.Height = S 68
 $lblDesc.Padding = New-Object System.Windows.Forms.Padding((S 14), (S 6), (S 14), (S 6))
 $lblDesc.BackColor = $White
 $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
@@ -1110,7 +1110,7 @@ $lblDesc.Text = $DescDefault.clean
 # ---------- Registro
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Dock = 'Bottom'
-$logBox.Height = S 140
+$logBox.Height = S 124
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
 $logBox.ScrollBars = 'Vertical'
@@ -1196,7 +1196,7 @@ $form.Controls.Add($header)
 function Update-Info {
     $d = New-Object System.IO.DriveInfo $env:SystemDrive
     $adm = if ($script:IsAdmin) { 'Sí' } else { 'No (algunas opciones desactivadas)' }
-    $txt = "Espacio libre en ${env:SystemDrive}: $(Format-Size $d.AvailableFreeSpace) de $(Format-Size $d.TotalSize)    ·    $script:Machine, $script:RamGB GB RAM    ·    Administrador: $adm"
+    $txt = "Espacio libre en ${env:SystemDrive} $(Format-Size $d.AvailableFreeSpace) de $(Format-Size $d.TotalSize)    ·    $script:Machine, $script:RamGB GB RAM    ·    Administrador: $adm"
     if ($script:OtherUser) { $txt += "    ·    Perfil: $script:TargetName" }
     $lblInfo.Text = $txt
 }
@@ -1327,7 +1327,7 @@ function Invoke-Clean {
     Set-Busy $false
     Update-Info
     Update-Selection
-    $msg = "Limpieza completada.`n`nEspacio liberado: $(Format-Size $grand)`nEspacio libre en ${env:SystemDrive}: $(Format-Size $freeBefore)  →  $(Format-Size $freeAfter)"
+    $msg = "Limpieza completada.`n`nEspacio liberado: $(Format-Size $grand)`nEspacio libre en ${env:SystemDrive} $(Format-Size $freeBefore)  →  $(Format-Size $freeAfter)"
     if ($script:IsVM) { $msg += "`n`nEs una máquina virtual: ejecuta 'Optimizar unidades' en la pestaña Optimizar y compacta el disco virtual para que el anfitrión recupere el espacio." }
     Show-Info $msg
 }
