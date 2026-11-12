@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.3'
+$AppVersion = '1.3.4'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1762,12 +1762,26 @@ function Test-WingetNoise([string]$s) {
     return ($s.Length -le 2) -or ($s -match '[█▒]')
 }
 
-# Lee la primera tabla de "winget upgrade". Las columnas se toman de derecha a izquierda porque los nombres
+# Lee las tablas de "winget upgrade". Las columnas se toman de derecha a izquierda porque los nombres
 # pueden contener espacios y caracteres anchos; el Id, las versiones y el origen no tienen espacios.
+# winget puede mostrar una segunda tabla, precedida de una frase que termina en dos puntos, con paquetes que
+# "requieren un destino explícito": solo se actualizan si se piden expresamente. Esos se marcan con Explicit.
+# Si no hay actualizaciones normales, esa tabla es la única, por eso se mira la frase y no solo el orden.
 function ConvertFrom-WingetTable($lines) {
-    $dash = -1
-    for ($i = 1; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*-{10,}\s*$') { $dash = $i; break } }
-    if ($dash -lt 1) { return @() }
+    $res = @()
+    $first = $true
+    for ($d = 1; $d -lt $lines.Count; $d++) {
+        if ($lines[$d] -notmatch '^\s*-{10,}\s*$') { continue }
+        $prev = ''
+        for ($j = $d - 2; $j -ge 0; $j--) { $s = $lines[$j].Trim(); if ($s -and -not (Test-WingetNoise $s)) { $prev = $s; break } }
+        $explicit = (-not $first) -or ($prev -match '[:：]$')
+        $first = $false
+        $res += @(ConvertFrom-WingetRows $lines $d $explicit)
+    }
+    return $res
+}
+
+function ConvertFrom-WingetRows($lines, [int]$dash, [bool]$explicit) {
     $hasSource = @($lines[$dash - 1].Trim() -split '\s+').Count -ge 5
     $res = @()
     for ($i = $dash + 1; $i -lt $lines.Count; $i++) {
@@ -1789,6 +1803,7 @@ function ConvertFrom-WingetTable($lines) {
             Available = $avail
             Source    = $src
             Unknown   = ($ver -notmatch '\d')
+            Explicit  = $explicit
         }
     }
     return $res
@@ -1833,18 +1848,20 @@ function Update-UpdList {
     $GU1 = L 'Actualizaciones disponibles' 'Available updates'
     $GU2 = L 'Versión instalada desconocida (revísalas antes de actualizar)' 'Unknown installed version (check them before updating)'
     $GU3 = L 'Ignoradas (no se actualizan; "Ignorar / restaurar" las devuelve a la lista)' 'Ignored (not updated; "Ignore / restore" brings them back)'
+    $GU4 = L 'Solo se actualizan si se piden expresamente (revísalas antes)' 'Updated only when explicitly requested (check them first)'
     $ug = [ordered]@{}
-    foreach ($name in $GU1, $GU2, $GU3) { $ug[$name] = New-Object System.Windows.Forms.ListViewGroup($name, $name); [void]$updList.Groups.Add($ug[$name]) }
+    foreach ($name in $GU1, $GU4, $GU2, $GU3) { $ug[$name] = New-Object System.Windows.Forms.ListViewGroup($name, $name); [void]$updList.Groups.Add($ug[$name]) }
     $updList.BeginUpdate()
     foreach ($u in ($items + $pinned)) {
         $isSelf = $u.Id -eq 'Microsoft.AppInstaller'
-        $u | Add-Member -NotePropertyName Default -NotePropertyValue ((-not $u.Unknown) -and (-not $isSelf) -and (-not $u.Pinned))
+        $u | Add-Member -NotePropertyName Default -NotePropertyValue ((-not $u.Unknown) -and (-not $isSelf) -and (-not $u.Pinned) -and (-not $u.Explicit))
         $note = if ($u.Pinned) { L 'Ignorada: winget no la ofrece para actualizar. Márcala y pulsa "Ignorar / restaurar" para volver a verla.' 'Ignored: winget does not offer it for update. Check it and click "Ignore / restore" to bring it back.' }
+                elseif ($u.Explicit) { L 'winget no la incluye en las actualizaciones automáticas: el paquete pide que solo se actualice a propósito (a menudo porque se actualiza solo). Márcala solo si de verdad quieres actualizarla.' 'winget leaves it out of automatic upgrades: the package asks to be updated only on purpose (often because it updates itself). Check it only if you really want to update it.' }
                 elseif ($u.Unknown) { L 'winget no conoce la versión instalada: puede reinstalarla aunque ya esté al día. Si sigue apareciendo después de actualizar, puedes ignorarla.' 'winget does not know the installed version: it may reinstall it even if it is up to date. If it keeps showing up after updating, you can ignore it.' }
                 elseif ($isSelf) { L 'Es el propio winget: mejor actualizarlo desde Microsoft Store.' 'This is winget itself: better update it from the Microsoft Store.' }
                 else { '' }
         $u | Add-Member -NotePropertyName Note -NotePropertyValue $note
-        $grp = if ($u.Pinned) { $GU3 } elseif ($u.Unknown) { $GU2 } else { $GU1 }
+        $grp = if ($u.Pinned) { $GU3 } elseif ($u.Explicit) { $GU4 } elseif ($u.Unknown) { $GU2 } else { $GU1 }
         $ver = if ($u.Unknown) { L 'Desconocida' 'Unknown' } else { $u.Version }
         Add-LVItem $updList $ug $grp $u.Name @($ver, $u.Available, $u.Id) $u $u.Default $true
     }
