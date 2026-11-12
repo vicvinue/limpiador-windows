@@ -1,0 +1,4 @@
+# Archivos que no se incluyen en los zips de las versiones publicadas (git archive)
+docs/          export-ignore
+.gitattributes export-ignore
+.gitignore     export-ignore
