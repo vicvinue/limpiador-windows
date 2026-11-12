@@ -8,7 +8,7 @@ Es un único script de PowerShell con interfaz gráfica: no hay que instalar nad
 
 ![Pestaña Archivos basura del Limpiador de Windows](docs/captura-limpieza.png)
 
-> *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools and find large files. Every change is conservative and reversible. **The interface is available in English and Spanish** and picks the language of your Windows automatically.
+> *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools, update your apps with winget and find large files. Every change is conservative and reversible. **The interface is available in English and Spanish** and picks the language of your Windows automatically.
 
 ---
 
@@ -48,6 +48,14 @@ Todo ajuste guarda su valor original y se puede revertir con **Deshacer ajustes*
 
 ![Pestaña Optimizar del Limpiador de Windows](docs/captura-optimizar.png)
 
+### 🔄 Actualizaciones
+Lista las aplicaciones instaladas que tienen una versión nueva, usando **winget**, el gestor de paquetes oficial de Windows. Se actualizan con el instalador de cada programa.
+- Muestra la versión instalada, la disponible y el origen (`winget` o `msstore`). Puedes elegir qué actualizar.
+- El progreso y la salida de cada instalador aparecen en la consola de la parte inferior.
+- Las apps cuya versión instalada no se puede saber van en un grupo aparte y **no vienen marcadas**.
+- *Cancelar* detiene el proceso al terminar la app en curso: nunca interrumpe un instalador a medias.
+- Si winget no está instalado, la pestaña lo indica. Se instala con *Instalador de aplicación* (App Installer) desde Microsoft Store.
+
 ### 📊 Espacio
 Analizador de las carpetas y los archivos más grandes de tu perfil, de Descargas, de una unidad o de cualquier carpeta.
 - Doble clic para entrar en una carpeta, y opción para abrir su ubicación en el Explorador.
@@ -63,7 +71,7 @@ La interfaz está en **español e inglés**:
 
 ## Principios de seguridad
 
-- **Nunca** toca documentos, programas instalados, controladores ni componentes del sistema.
+- **Nunca** toca documentos, programas instalados, controladores ni componentes del sistema. La única excepción son las actualizaciones que tú elijas en la pestaña *Actualizaciones*.
 - **No** limpia el registro (los "limpiadores de registro" no aceleran nada y pueden romper programas).
 - **No** desactiva Windows Defender, Windows Update ni servicios del sistema.
 - **No** sigue enlaces simbólicos ni uniones (junctions): nunca puede borrar fuera de la carpeta que limpia.

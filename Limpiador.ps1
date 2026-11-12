@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.2.0'
+$AppVersion = '1.3.0'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1132,11 +1132,21 @@ $tabSpace.Controls.Add($split)
 $tabSpace.Controls.Add($lblSpPath)
 $tabSpace.Controls.Add($spaceBar)
 
+# ---------- Pestaña 5: Actualizaciones (winget)
+$updList = New-LV @(@((L 'Aplicación' 'App'), 330), @((L 'Instalada' 'Installed'), 130), @((L 'Disponible' 'Available'), 130), @('Id', 300)) $true
+$updBar = New-OptionsBar
+$updHint = L 'Usa winget, el gestor de paquetes oficial de Windows, con los instaladores de cada programa.' 'Uses winget, the official Windows package manager, with each program''s own installers.'
+if ($script:OtherUser) { $updHint += L " Se ejecuta con la cuenta de administrador: puede que no aparezcan las apps instaladas solo para $script:TargetName." " It runs as the administrator account: apps installed only for $script:TargetName may not be listed." }
+$updBar.Controls.Add((New-Hint $updHint))
+$tabUpd = New-Tab 'update' (L 'Actualizaciones' 'Updates')
+$tabUpd.Controls.Add($updList)
+$tabUpd.Controls.Add($updBar)
+
 # ---------- Pestañas
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabs.Padding = New-Object System.Drawing.Point((S 16), (S 6))
-$tabs.TabPages.AddRange(@($tabClean, $tabBloat, $tabOpt, $tabSpace))
+$tabs.TabPages.AddRange(@($tabClean, $tabBloat, $tabOpt, $tabUpd, $tabSpace))
 
 # ---------- Descripción
 $lblDesc = New-Object System.Windows.Forms.Label
@@ -1151,6 +1161,7 @@ $DescDefault = @{
     bloat = L 'Selecciona una app para ver qué es. Solo se muestran apps de una lista segura: nunca componentes del sistema.' 'Select an app to see what it is. Only apps from a safe list are shown: never system components.'
     opt   = L 'Selecciona una acción para ver qué hace. Los ajustes guardan su valor original y se pueden deshacer.' 'Select an action to see what it does. Tweaks save their original value and can be undone.'
     space = L 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows y de programas están protegidas.' 'Information only. Anything you send to the Recycle Bin can be restored from it. Windows and program folders are protected.'
+    update = L 'Selecciona una app para ver sus detalles. Guarda tu trabajo antes de actualizar: el instalador puede cerrar la app si está abierta.' 'Select an app to see its details. Save your work before updating: the installer may close the app if it is open.'
 }
 $lblDesc.Text = $DescDefault.clean
 
@@ -1200,10 +1211,12 @@ $TabButtons = [ordered]@{
     bloat = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Desinstalar seleccionadas' 'Uninstall selected') $true $Danger))
     opt   = @((New-Btn (L 'Deshacer ajustes' 'Undo tweaks') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Aplicar seleccionadas' 'Apply selected') $true))
     space = @((New-Btn (L 'Volver a analizar' 'Scan again') $false), (New-Btn (L 'Abrir ubicación' 'Open location') $false), (New-Btn (L 'Enviar a la papelera' 'Send to Recycle Bin') $true $Danger))
+    update = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Actualizar seleccionadas' 'Update selected') $true))
 }
 $btnAnalyze, $btnRecom, $btnNone, $btnClean                       = $TabButtons.clean
 $btnBloatReload, $btnBloatRecom, $btnBloatNone, $btnBloatRemove   = $TabButtons.bloat
 $btnOptUndo, $btnOptRecom, $btnOptNone, $btnOptRun                = $TabButtons.opt
+$btnUpdReload, $btnUpdRecom, $btnUpdNone, $btnUpdRun              = $TabButtons.update
 $btnSpRescan, $btnSpOpen, $btnSpTrash                             = $TabButtons.space
 $btnCancel = New-Btn (L 'Cancelar' 'Cancel') $false
 $btnCancel.Visible = $false
@@ -1292,6 +1305,10 @@ function Update-Selection {
         'space' {
             $lblStatus.Text = $script:SpaceSummary
         }
+        'update' {
+            $n = @($updList.Items | Where-Object { $_.Checked }).Count
+            $lblStatus.Text = L "Seleccionadas: $n de $($updList.Items.Count) actualizaciones" "Selected: $n of $($updList.Items.Count) updates"
+        }
     }
 }
 
@@ -1305,6 +1322,7 @@ function Set-Busy([bool]$on) {
     foreach ($b in $script:AllButtons) { $b.Enabled = -not $on }
     $bloatOpts.Enabled = -not $on
     $spaceBar.Enabled = -not $on
+    $updBar.Enabled = -not $on
     $cmbLang.Enabled = -not $on
     $form.Cursor = if ($on) { [System.Windows.Forms.Cursors]::WaitCursor } else { [System.Windows.Forms.Cursors]::Default }
     if (-not $on) { $progress.Value = 0 }
@@ -1669,11 +1687,216 @@ function Invoke-SpaceTrash {
     Show-Info (L "$ok archivos enviados a la papelera.`nRecuerda vaciar la papelera para liberar el espacio." "$ok files sent to the Recycle Bin.`nRemember to empty the Recycle Bin to free the space.")
 }
 
+# ---------- 5. Actualizaciones (winget)
+# winget no siempre está en el PATH (por ejemplo, en procesos elevados): se busca también su alias y su carpeta.
+function Get-WingetPath {
+    $c = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+    if (Test-Path -LiteralPath $alias) { return $alias }
+    $dirs = Get-ChildItem -LiteralPath (Join-Path $env:ProgramFiles 'WindowsApps') -Directory -Filter 'Microsoft.DesktopAppInstaller_*' -ErrorAction SilentlyContinue |
+        Sort-Object { try { [version](($_.Name -split '_')[1]) } catch { [version]'0.0' } } -Descending
+    foreach ($d in $dirs) {
+        $exe = Join-Path $d.FullName 'winget.exe'
+        if (Test-Path -LiteralPath $exe) { return $exe }
+    }
+    return $null
+}
+
+# Ejecuta winget sin ventana y pasa cada línea de su salida a $OnLine mientras la interfaz sigue respondiendo.
+function Invoke-Winget([string]$ArgLine, [scriptblock]$OnLine) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:Winget
+    $psi.Arguments = $ArgLine
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $buf = New-Object char[] 4096
+    $pending = ''
+    $lines = New-Object System.Collections.Generic.List[string]
+    while ($true) {
+        $t = $p.StandardOutput.ReadAsync($buf, 0, $buf.Length)
+        while (-not $t.IsCompleted) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }
+        $n = $t.Result
+        if ($n -le 0) { break }
+        # winget redibuja sus barras de progreso con retornos de carro: se tratan como líneas sueltas
+        $parts = ($pending + [string]::new($buf, 0, $n)) -split "`r`n|`n|`r"
+        $pending = $parts[-1]
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) { $lines.Add($parts[$i]); if ($OnLine) { & $OnLine $parts[$i] } }
+    }
+    if ($pending) { $lines.Add($pending); if ($OnLine) { & $OnLine $pending } }
+    $p.WaitForExit()
+    foreach ($l in ($errTask.Result -split "`r?`n")) { if ($l.Trim()) { $lines.Add($l); if ($OnLine) { & $OnLine $l } } }
+    return [pscustomobject]@{ Code = $p.ExitCode; Lines = $lines }
+}
+
+# Líneas de animación o barras de progreso de winget (no se escriben en el registro)
+function Test-WingetNoise([string]$s) {
+    return ($s.Length -le 2) -or ($s -match '[█▒]')
+}
+
+# Lee la primera tabla de "winget upgrade". Las columnas se toman de derecha a izquierda porque los nombres
+# pueden contener espacios y caracteres anchos; el Id, las versiones y el origen no tienen espacios.
+function ConvertFrom-WingetTable($lines) {
+    $dash = -1
+    for ($i = 1; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*-{10,}\s*$') { $dash = $i; break } }
+    if ($dash -lt 1) { return @() }
+    $hasSource = @($lines[$dash - 1].Trim() -split '\s+').Count -ge 5
+    $res = @()
+    for ($i = $dash + 1; $i -lt $lines.Count; $i++) {
+        $tok = @($lines[$i].Trim() -split '\s+')
+        if ($tok.Count -lt 4) { break }
+        $k = $tok.Count - 1
+        $src = ''
+        if ($hasSource) { $src = $tok[$k]; $k-- }
+        $avail = $tok[$k]; $k--
+        $ver = $tok[$k]; $k--
+        if ($k -ge 2 -and $tok[$k] -in '<', '>') { $ver = $tok[$k] + ' ' + $ver; $k-- }
+        $id = $tok[$k]; $k--
+        if ($k -lt 0 -or $avail -notmatch '\d') { break }   # fin de la tabla (línea de resumen)
+        if ($id.EndsWith([string][char]0x2026)) { continue } # Id recortado por winget: no se puede usar
+        $res += [pscustomobject]@{
+            Name      = ($tok[0..$k] -join ' ')
+            Id        = $id
+            Version   = $ver
+            Available = $avail
+            Source    = $src
+            Unknown   = ($ver -notmatch '\d')
+        }
+    }
+    return $res
+}
+
+function Update-UpdList {
+    Set-Busy $true
+    $updList.BeginUpdate()
+    $updList.Items.Clear()
+    $updList.Groups.Clear()
+    $updList.EndUpdate()
+    $script:UpdLoaded = $true
+    if (-not $script:Winget) { $script:Winget = Get-WingetPath }
+    if (-not $script:Winget) {
+        Write-Log (L 'winget no está disponible. Instala o actualiza "Instalador de aplicación" (App Installer) desde Microsoft Store.' 'winget is not available. Install or update "App Installer" from the Microsoft Store.')
+        $lblDesc.Text = L 'winget no está disponible en este equipo. Se instala con "Instalador de aplicación" (App Installer) desde Microsoft Store.' 'winget is not available on this PC. It comes with "App Installer" from the Microsoft Store.'
+        Set-Busy $false; Update-Selection; return
+    }
+    $lblStatus.Text = L 'Buscando actualizaciones con winget (puede tardar un poco)...' 'Looking for updates with winget (may take a moment)...'
+    Write-Log (L 'Buscando actualizaciones con winget...' 'Looking for updates with winget...')
+    $r = $null
+    try { $r = Invoke-Winget 'upgrade --include-unknown --accept-source-agreements --disable-interactivity' } catch { Write-Log ('  Error: ' + $_.Exception.Message) }
+    $items = @()
+    if ($r) { $items = @(ConvertFrom-WingetTable $r.Lines) }
+    if ($r -and $items.Count -eq 0) {
+        # Sin tabla: o no hay actualizaciones o hubo un error. Se muestra lo que dijo winget.
+        foreach ($l in $r.Lines) { $s = $l.Trim(); if ($s -and -not (Test-WingetNoise $s)) { Write-Log "  $s" } }
+    }
+
+    $GU1 = L 'Actualizaciones disponibles' 'Available updates'
+    $GU2 = L 'Versión instalada desconocida (revísalas antes de actualizar)' 'Unknown installed version (check them before updating)'
+    $ug = [ordered]@{}
+    foreach ($name in $GU1, $GU2) { $ug[$name] = New-Object System.Windows.Forms.ListViewGroup($name, $name); [void]$updList.Groups.Add($ug[$name]) }
+    $updList.BeginUpdate()
+    foreach ($u in $items) {
+        $isSelf = $u.Id -eq 'Microsoft.AppInstaller'
+        $u | Add-Member -NotePropertyName Default -NotePropertyValue ((-not $u.Unknown) -and (-not $isSelf))
+        $note = if ($u.Unknown) { L 'winget no conoce la versión instalada: puede reinstalarla aunque ya esté al día.' 'winget does not know the installed version: it may reinstall it even if it is up to date.' }
+                elseif ($isSelf) { L 'Es el propio winget: mejor actualizarlo desde Microsoft Store.' 'This is winget itself: better update it from the Microsoft Store.' }
+                else { '' }
+        $u | Add-Member -NotePropertyName Note -NotePropertyValue $note
+        $grp = if ($u.Unknown) { $GU2 } else { $GU1 }
+        $ver = if ($u.Unknown) { L 'Desconocida' 'Unknown' } else { $u.Version }
+        Add-LVItem $updList $ug $grp $u.Name @($ver, $u.Available, $u.Id) $u $u.Default $true
+    }
+    $updList.EndUpdate()
+    Write-Log (L "winget: $($items.Count) actualizaciones disponibles." "winget: $($items.Count) updates available.")
+    Set-Busy $false
+    Update-Selection
+}
+
+function Invoke-UpdRun {
+    $sel = @($updList.Items | Where-Object { $_.Checked })
+    if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna actualización seleccionada.' 'No update is selected.'); return }
+    $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name + '  →  ' + $_.Tag.Available }) -join "`n"
+    $msg = L "Se van a actualizar $($sel.Count) apps:`n`n$names`n`nGuarda tu trabajo: los instaladores pueden cerrar estas apps si están abiertas. ¿Continuar?" "$($sel.Count) apps will be updated:`n`n$names`n`nSave your work: the installers may close these apps if they are open. Continue?"
+    if (-not (Confirm-Action $msg (L 'Confirmar actualización' 'Confirm update'))) { return }
+
+    Set-Busy $true
+    $script:Cancel = $false
+    $btnCancel.Visible = $true
+    $btnCancel.Enabled = $true
+    Write-Log (L '===== Actualización con winget =====' '===== Update with winget =====')
+    $ok = 0; $fail = 0; $reboot = $false
+    $script:UpdIndex = 0; $script:UpdTotal = $sel.Count
+    foreach ($it in $sel) {
+        if ($script:Cancel) { Write-Log (L 'Cancelado: no se actualizan las apps restantes.' 'Cancelled: the remaining apps are not updated.'); break }
+        $script:UpdIndex++
+        $u = $it.Tag
+        $script:UpdCurrent = (L 'Actualizando' 'Updating') + " $($u.Name) ($script:UpdIndex/$script:UpdTotal)"
+        $progress.Value = [int](100 * ($script:UpdIndex - 1) / $script:UpdTotal)
+        $lblStatus.Text = $script:UpdCurrent + '...'
+        $it.SubItems[1].Text = L 'En curso...' 'Running...'
+        Write-Log ((L 'Actualizando: ' 'Updating: ') + "$($u.Name) ($($u.Id)) $($u.Version) → $($u.Available)")
+        $a = "upgrade --id `"$($u.Id)`" --exact --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity"
+        if ($u.Source) { $a += " --source `"$($u.Source)`"" }
+        $r = $null
+        try {
+            $r = Invoke-Winget $a {
+                param($line)
+                $s = $line.Trim()
+                if (-not $s -or $s.Length -le 2) { return }
+                if ($s -match '[█▒]') {
+                    # Barra de progreso de la descarga: se muestra en la barra de estado, no en el registro
+                    $frac = $null
+                    if ($s -match '(\d+)\s*%') { $frac = [int]$Matches[1] / 100 }
+                    elseif ($s -match '([\d.,]+)\s*([KMG]?B)\s*/\s*([\d.,]+)\s*([KMG]?B)') {
+                        $m = @{ B = 1; KB = 1KB; MB = 1MB; GB = 1GB }
+                        $done  = [double]($Matches[1] -replace ',', '.') * $m[$Matches[2]]
+                        $total = [double]($Matches[3] -replace ',', '.') * $m[$Matches[4]]
+                        if ($total -gt 0) { $frac = [math]::Min(1, $done / $total) }
+                    }
+                    if ($null -ne $frac) { $progress.Value = [int](100 * ($script:UpdIndex - 1 + $frac) / $script:UpdTotal) }
+                    $lblStatus.Text = $script:UpdCurrent + ' · ' + (($s -replace '[█▒]+', ' ') -replace '\s+', ' ').Trim()
+                    return
+                }
+                Write-Log "  $s"
+            }
+        } catch { Write-Log ('  Error: ' + $_.Exception.Message) }
+
+        if ($r -and $r.Code -in 0, 3010, 1641) {
+            if ($r.Code -ne 0) { $reboot = $true; Write-Log (L '  OK (requiere reiniciar)' '  OK (restart required)') } else { Write-Log '  OK' }
+            $updList.Items.Remove($it)
+            $ok++
+        } else {
+            if ($r) { Write-Log ((L '  Error: winget terminó con código ' '  Error: winget exited with code ') + ('0x{0:X8}' -f $r.Code)) }
+            $it.SubItems[1].Text = if ($u.Unknown) { L 'Desconocida' 'Unknown' } else { $u.Version }
+            $it.ForeColor = [System.Drawing.Color]::Firebrick
+            $script:Internal = $true; $it.Checked = $false; $script:Internal = $false
+            $fail++
+        }
+    }
+    Write-Log (L "===== Fin. Actualizadas: $ok · Con error: $fail =====" "===== Done. Updated: $ok · Failed: $fail =====")
+    $btnCancel.Visible = $false
+    Set-Busy $false
+    Update-Info
+    Update-Selection
+    $extra = ''
+    if ($fail -gt 0) { $extra += L "`nCon error: $fail (detalles en el registro inferior)" "`nFailed: $fail (details in the log below)" }
+    if ($reboot) { $extra += L "`n`nAlguna actualización necesita reiniciar el equipo para terminar." "`n`nSome updates need a restart to finish." }
+    Show-Info ((L "Actualización completada.`n`nActualizadas: $ok" "Update completed.`n`nUpdated: $ok") + $extra)
+}
+
 # ================================================================ Eventos =====
 $script:BloatLoaded = $false
+$script:UpdLoaded = $false
+$script:Winget = $null
 $script:SpaceLoaded = $false
 
-foreach ($lv in $list, $bloatList, $optList) { Add-CheckGuard $lv }
+foreach ($lv in $list, $bloatList, $optList, $updList) { Add-CheckGuard $lv }
 
 $cmbLang.Add_SelectedIndexChanged({ Set-Language })
 
@@ -1683,6 +1906,7 @@ $tabs.Add_SelectedIndexChanged({
     Show-TabButtons
     $lblDesc.Text = $DescDefault[$k]
     if ($k -eq 'bloat' -and -not $script:BloatLoaded) { Update-BloatList; return }
+    if ($k -eq 'update' -and -not $script:UpdLoaded) { Update-UpdList; return }
     if ($k -eq 'space' -and -not $script:SpaceLoaded) {
         $script:SpaceLoaded = $true
         try { $split.SplitterDistance = [int]($split.ClientSize.Width * 0.42) } catch { }
@@ -1697,6 +1921,17 @@ $tabs.Add_SelectedIndexChanged({
 $list.Add_ItemSelectionChanged({ param($s, $e) if ($e.IsSelected) { $lblDesc.Text = "$($e.Item.Tag.Name): $($e.Item.Tag.Desc)" } })
 $bloatList.Add_ItemSelectionChanged({ param($s, $e) if ($e.IsSelected) { $lblDesc.Text = "$($e.Item.Tag.Name): $($e.Item.Tag.Note)" } })
 $optList.Add_ItemSelectionChanged({ param($s, $e) if ($e.IsSelected) { $lblDesc.Text = "$($e.Item.Tag.Name): $($e.Item.Tag.Desc)" } })
+$updList.Add_ItemSelectionChanged({
+    param($s, $e)
+    if ($e.IsSelected) {
+        $u = $e.Item.Tag
+        $ver = if ($u.Unknown) { L 'desconocida' 'unknown' } else { $u.Version }
+        $txt = "$($u.Name)  ·  Id: $($u.Id)  ·  $ver → $($u.Available)"
+        if ($u.Source) { $txt += '  ·  ' + (L 'origen' 'source') + ": $($u.Source)" }
+        if ($u.Note) { $txt += "`n$($u.Note)" }
+        $lblDesc.Text = $txt
+    }
+})
 $lvFiles.Add_ItemSelectionChanged({
     param($s, $e)
     if ($e.IsSelected) {
@@ -1729,6 +1964,12 @@ $btnOptRun.Add_Click({ Invoke-OptRun })
 $btnOptUndo.Add_Click({ Invoke-OptUndo })
 $btnOptNone.Add_Click({ foreach ($it in $optList.Items) { $it.Checked = $false } })
 $btnOptRecom.Add_Click({ foreach ($it in $optList.Items) { $it.Checked = $it.Tag.Default -and ((-not $it.Tag.Admin) -or $script:IsAdmin) } })
+
+# Actualizaciones
+$btnUpdReload.Add_Click({ Update-UpdList })
+$btnUpdRun.Add_Click({ Invoke-UpdRun })
+$btnUpdNone.Add_Click({ foreach ($it in $updList.Items) { $it.Checked = $false } })
+$btnUpdRecom.Add_Click({ foreach ($it in $updList.Items) { $it.Checked = $it.Tag.Default } })
 
 # Espacio
 $btnSpProfile.Add_Click({ Invoke-SpaceScan $TargetProfile })
