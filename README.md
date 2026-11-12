@@ -63,7 +63,8 @@ Lista las aplicaciones instaladas que tienen una versión nueva, usando **winget
 ### 📊 Espacio
 Analizador de las carpetas y los archivos más grandes de tu perfil, de Descargas, de una unidad o de cualquier carpeta.
 - Doble clic para entrar en una carpeta, y opción para abrir su ubicación en el Explorador.
-- **Enviar a la papelera** en lugar de borrar, para poder recuperarlo. Las carpetas de Windows, las de los programas y las copias de instaladores (`Package Cache`) están protegidas.
+- **Enviar a la papelera** carpetas o archivos en lugar de borrarlos, para poder recuperarlos. Si algo no cabe en la papelera, Windows pregunta antes de borrarlo definitivamente.
+- Protegidas: las carpetas de Windows y de los programas, las copias de instaladores (`Package Cache`), la raíz de las unidades, los perfiles de usuario, tus carpetas personales (Escritorio, Documentos, Descargas...), `AppData` y la raíz de OneDrive. Avisa si una carpeta está dentro de `AppData` o de OneDrive.
 
 ### 🌐 Idioma / Language
 La interfaz está en **español e inglés**:

@@ -35,7 +35,8 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.5'
+$AppVersion = '1.3.6'
+$script:AppDir = Split-Path -Parent $PSCommandPath
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1167,7 +1168,7 @@ $DescDefault = @{
     clean = L 'Selecciona un elemento para ver qué se borra exactamente.' 'Select an item to see exactly what gets deleted.'
     bloat = L 'Selecciona una app para ver qué es. Solo se muestran apps de una lista segura: nunca componentes del sistema.' 'Select an app to see what it is. Only apps from a safe list are shown: never system components.'
     opt   = L 'Selecciona una acción para ver qué hace. Los ajustes guardan su valor original y se pueden deshacer.' 'Select an action to see what it does. Tweaks save their original value and can be undone.'
-    space = L 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows, de programas y de copias de instaladores están protegidas.' 'Information only. Anything you send to the Recycle Bin can be restored from it. Windows, program and installer cache folders are protected.'
+    space = L 'Selecciona una carpeta (izquierda) o archivos (derecha) y pulsa "Enviar a la papelera": se pueden recuperar desde ella. Windows, los programas, tus carpetas personales y AppData están protegidos.' 'Select a folder (left) or files (right) and click "Send to Recycle Bin": they can be restored from it. Windows, programs, your personal folders and AppData are protected.'
     update = L 'Selecciona una app para ver sus detalles. Guarda tu trabajo antes de actualizar: el instalador puede cerrar la app si está abierta.' 'Select an app to see its details. Save your work before updating: the installer may close the app if it is open.'
 }
 $lblDesc.Text = $DescDefault.clean
@@ -1690,9 +1691,85 @@ function Open-Location([string]$path) {
     elseif ([IO.Directory]::Exists($path)) { Start-Process explorer.exe -ArgumentList "`"$path`"" }
 }
 
+# Enviar a la papelera con SHFileOperation. FOF_WANTNUKEWARNING hace que Windows pregunte antes de borrar
+# definitivamente algo que no cabe en la papelera (con solo FOF_NOCONFIRMATION lo borraría sin avisar).
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class LimpiadorRecycle {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct Op64 { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags;
+                  [MarshalAs(UnmanagedType.Bool)] public bool fAnyOperationsAborted; public IntPtr hNameMappings; public string lpszProgressTitle; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 1)]
+    struct Op32 { public IntPtr hwnd; public uint wFunc; public string pFrom; public string pTo; public ushort fFlags;
+                  [MarshalAs(UnmanagedType.Bool)] public bool fAnyOperationsAborted; public IntPtr hNameMappings; public string lpszProgressTitle; }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "SHFileOperationW")] static extern int Sh64(ref Op64 op);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, EntryPoint = "SHFileOperationW")] static extern int Sh32(ref Op32 op);
+    // 0 = enviado; -1 = cancelado por el usuario; otro valor = código de error de Windows
+    public static int Send(string path, IntPtr owner) {
+        const uint FO_DELETE = 3;
+        const ushort flags = 0x0040 | 0x0010 | 0x4000; // FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING
+        string from = path + "\0\0";
+        if (IntPtr.Size == 8) {
+            Op64 op = new Op64 { hwnd = owner, wFunc = FO_DELETE, pFrom = from, fFlags = flags };
+            int r = Sh64(ref op); return (r == 0 && op.fAnyOperationsAborted) ? -1 : r;
+        } else {
+            Op32 op = new Op32 { hwnd = owner, wFunc = FO_DELETE, pFrom = from, fFlags = flags };
+            int r = Sh32(ref op); return (r == 0 && op.fAnyOperationsAborted) ? -1 : r;
+        }
+    }
+}
+'@
+
+# Envía a la papelera y comprueba que ya no existe. Devuelve $null si salió bien o el motivo del fallo.
+function Send-ToRecycleBin([string]$path) {
+    $owner = [IntPtr]::Zero
+    if ($form) { $owner = $form.Handle }
+    $r = [LimpiadorRecycle]::Send($path, $owner)
+    if ($r -eq -1) { return (L 'cancelado (no cabía en la papelera o se canceló en Windows)' 'cancelled (it did not fit in the Recycle Bin or was cancelled in Windows)') }
+    if ($r -ne 0) { return (L 'Windows devolvió el código ' 'Windows returned code ') + ('0x{0:X}' -f $r) }
+    if ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) { return (L 'sigue existiendo (puede que esté en uso)' 'it still exists (it may be in use)') }
+    return $null
+}
+
+# Carpetas que nunca se ofrecen para enviar a la papelera aunque no sean del sistema
+function Get-UserShellFolders {
+    $out = @()
+    try {
+        $k = Get-Item -LiteralPath "$script:HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction Stop
+        foreach ($n in $k.GetValueNames()) {
+            $v = [string]$k.GetValue($n, $null, 'DoNotExpandEnvironmentNames')
+            if (-not $v) { continue }
+            $v = $v -replace '%USERPROFILE%', $TargetProfile.Replace('$', '$$')
+            $v = $v -replace '%LOCALAPPDATA%', $TargetLocal.Replace('$', '$$')
+            $v = $v -replace '%APPDATA%', $TargetRoaming.Replace('$', '$$')
+            $out += [Environment]::ExpandEnvironmentVariables($v).TrimEnd('\')
+        }
+    } catch { }
+    return $out
+}
+
+function Get-FolderBlockReason([string]$p) {
+    $p = $p.TrimEnd('\')
+    if (Test-Protected "$p\") { return (L 'pertenece a Windows o a los programas instalados' 'it belongs to Windows or installed programs') }
+    if ([IO.Path]::GetPathRoot("$p\").TrimEnd('\') -eq $p) { return (L 'es la raíz de una unidad' 'it is the root of a drive') }
+    $users = Split-Path $TargetProfile -Parent
+    if ($p -eq $users -or (Split-Path $p -Parent) -eq $users) { return (L 'es la carpeta de usuarios o un perfil de usuario' 'it is the users folder or a user profile') }
+    $ad = "$TargetProfile\AppData"
+    if ($p -eq $ad -or (Split-Path $p -Parent) -eq $ad -or $p -in "$TargetLocal\Microsoft", "$TargetRoaming\Microsoft", "$TargetLocal\Packages", "$TargetLocal\Temp", "$TargetLocal\Programs") {
+        return (L 'es una carpeta de datos de Windows o de los programas (para limpiarla usa la pestaña Archivos basura)' 'it is a Windows or program data folder (use the Junk files tab to clean it)')
+    }
+    $personal = @(Get-UserShellFolders) + @('Desktop', 'Documents', 'Downloads', 'Pictures', 'Music', 'Videos', 'Favorites', 'Contacts', 'Links', 'Saved Games', 'Searches', '3D Objects' | ForEach-Object { "$TargetProfile\$_" })
+    if ($p -in $personal) { return (L 'es una de tus carpetas personales de Windows (puedes borrar lo que hay dentro, no la carpeta)' 'it is one of your Windows personal folders (you can delete what is inside, not the folder itself)') }
+    $od = @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
+    if ($p -in $od -or ((Split-Path $p -Parent) -eq $TargetProfile -and (Split-Path $p -Leaf) -like 'OneDrive*')) { return (L 'es la carpeta de OneDrive' 'it is the OneDrive folder') }
+    if ($script:AppDir -and ("$script:AppDir\").StartsWith("$p\", [StringComparison]::OrdinalIgnoreCase)) { return (L 'contiene esta aplicación' 'it contains this app') }
+    return $null
+}
+
 function Invoke-SpaceTrash {
+    if ($script:SpaceFocus -eq 'folders' -and $lvFolders.SelectedItems.Count -gt 0) { Invoke-SpaceTrashFolder; return }
     $sel = @($lvFiles.SelectedItems | ForEach-Object { $_ })
-    if ($sel.Count -eq 0) { Show-Info (L 'Selecciona uno o varios archivos en la lista de la derecha.' 'Select one or more files in the list on the right.'); return }
+    if ($sel.Count -eq 0) { Show-Info (L 'Selecciona una carpeta en la lista de la izquierda o uno o varios archivos en la de la derecha.' 'Select a folder in the list on the left, or one or more files in the list on the right.'); return }
     $prot = @($sel | Where-Object { Test-Protected $_.Tag })
     $sel  = @($sel | Where-Object { -not (Test-Protected $_.Tag) })
     if ($prot.Count -gt 0) { Write-Log ((L 'Se omite: ' 'Skipped: ') + (Plural $prot.Count 'archivo protegido del sistema' 'archivos protegidos del sistema' 'protected system file' 'protected system files') + '.') }
@@ -1705,19 +1782,56 @@ function Invoke-SpaceTrash {
     Set-Busy $true
     $ok = 0
     foreach ($it in $sel) {
-        try {
-            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($it.Tag, 'OnlyErrorDialogs', 'SendToRecycleBin')
+        $err = Send-ToRecycleBin $it.Tag
+        if ($err) { Write-Log ("  Error ($($it.Tag)): $err") }
+        else {
             Write-Log ((L 'Enviado a la papelera: ' 'Sent to Recycle Bin: ') + $it.Tag)
             $lvFiles.Items.Remove($it)
             $ok++
-        } catch {
-            Write-Log ("  Error ($($it.Tag)): " + $_.Exception.Message)
         }
     }
     Set-Busy $false
     Update-Info
     Update-Selection
     Show-Info ((Plural $ok 'archivo enviado a la papelera' 'archivos enviados a la papelera' 'file sent to the Recycle Bin' 'files sent to the Recycle Bin') + (L ".`nRecuerda vaciar la papelera para liberar el espacio." ".`nRemember to empty the Recycle Bin to free the space."))
+}
+
+function Invoke-SpaceTrashFolder {
+    $it = $lvFolders.SelectedItems[0]
+    $p = [string]$it.Tag
+    if (-not $p) { Show-Info (L 'Esta fila agrupa los archivos sueltos de la carpeta. Selecciónalos en la lista de la derecha.' 'This row groups the loose files of the folder. Select them in the list on the right.'); return }
+    $why = Get-FolderBlockReason $p
+    if ($why) { Show-Info ((L "No se puede enviar a la papelera:`n$p`n`nMotivo: " "This folder cannot be sent to the Recycle Bin:`n$p`n`nReason: ") + $why + '.'); return }
+
+    $warn = ''
+    if (("$p\").StartsWith("$TargetProfile\AppData\", [StringComparison]::OrdinalIgnoreCase)) {
+        $warn += L "`n`nATENCIÓN: está dentro de AppData. Suele contener la configuración o los datos de un programa: si el programa sigue instalado, puede perderlos o dejar de funcionar." "`n`nWARNING: it is inside AppData. It usually holds a program's settings or data: if the program is still installed, it may lose them or stop working."
+    }
+    foreach ($od in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial) | Where-Object { $_ }) {
+        if (("$p\").StartsWith($od.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            $warn += L "`n`nATENCIÓN: está en OneDrive. También se borrará en la nube y en tus otros dispositivos (se puede recuperar desde la papelera de OneDrive)." "`n`nWARNING: it is in OneDrive. It will also be deleted in the cloud and on your other devices (it can be restored from the OneDrive recycle bin)."
+            break
+        }
+    }
+    $msg = L "Se enviará a la papelera la carpeta y TODO su contenido:`n`n  $p`n  ($($it.Text))$warn`n`nPodrás recuperarla desde la papelera. Si no cabe en ella, Windows te preguntará antes de borrarla definitivamente. ¿Continuar?" "The folder and ALL its contents will be sent to the Recycle Bin:`n`n  $p`n  ($($it.Text))$warn`n`nYou can restore it from the Recycle Bin. If it does not fit, Windows will ask before deleting it permanently. Continue?"
+    if (-not (Confirm-Action $msg (L 'Enviar carpeta a la papelera' 'Send folder to Recycle Bin') 'Warning')) { return }
+
+    Set-Busy $true
+    $lblStatus.Text = (L 'Enviando a la papelera: ' 'Sending to the Recycle Bin: ') + $p
+    [System.Windows.Forms.Application]::DoEvents()
+    $err = Send-ToRecycleBin $p
+    Set-Busy $false
+    if ($err) {
+        Write-Log ("  Error ($p): $err")
+        Show-Info ((L "No se pudo enviar a la papelera:`n$p`n`n" "Could not send to the Recycle Bin:`n$p`n`n") + $err)
+    } else {
+        Write-Log ((L 'Carpeta enviada a la papelera: ' 'Folder sent to Recycle Bin: ') + "$p ($($it.Text))")
+        $lvFolders.Items.Remove($it)
+        foreach ($f in @($lvFiles.Items | Where-Object { ([string]$_.Tag).StartsWith("$p\", [StringComparison]::OrdinalIgnoreCase) })) { $lvFiles.Items.Remove($f) }
+        Show-Info (L "Carpeta enviada a la papelera.`nRecuerda vaciar la papelera para liberar el espacio." "Folder sent to the Recycle Bin.`nRemember to empty the Recycle Bin to free the space.")
+    }
+    Update-Info
+    Update-Selection
 }
 
 # ---------- 5. Actualizaciones (winget)
@@ -2059,6 +2173,7 @@ $updList.Add_ItemSelectionChanged({
 $lvFiles.Add_ItemSelectionChanged({
     param($s, $e)
     if ($e.IsSelected) {
+        $script:SpaceFocus = 'files'
         $p = $e.Item.Tag
         $txt = "$p  ·  $($e.Item.SubItems[1].Text)  ·  " + (L 'modificado ' 'modified ') + $e.Item.SubItems[2].Text
         if (Test-Protected $p) { $txt += L '  ·  PROTEGIDO (archivo del sistema o de programas)' '  ·  PROTECTED (system or program file)' }
@@ -2119,6 +2234,21 @@ $btnSpOpen.Add_Click({
     else { Open-Location $script:SpaceRoot }
 })
 $btnSpTrash.Add_Click({ Invoke-SpaceTrash })
+# El botón "Enviar a la papelera" actúa sobre la última lista usada (carpetas o archivos)
+$script:SpaceFocus = 'files'
+$lvFolders.Add_Enter({ $script:SpaceFocus = 'folders' })
+$lvFiles.Add_Enter({ $script:SpaceFocus = 'files' })
+$lvFolders.Add_ItemSelectionChanged({
+    param($s, $e)
+    if (-not $e.IsSelected) { return }
+    $script:SpaceFocus = 'folders'
+    $p = [string]$e.Item.Tag
+    if (-not $p) { $lblDesc.Text = L 'Archivos que están directamente en esta carpeta, sin subcarpeta. Para borrarlos, selecciónalos en la lista de la derecha.' 'Files directly in this folder, outside any subfolder. To delete them, select them in the list on the right.'; return }
+    $txt = "$p  ·  $($e.Item.Text)  ·  " + (L 'doble clic para entrar' 'double-click to open')
+    $why = Get-FolderBlockReason $p
+    if ($why) { $txt += (L '  ·  PROTEGIDA: ' '  ·  PROTECTED: ') + $why }
+    $lblDesc.Text = $txt
+})
 $lvFolders.Add_DoubleClick({ if (-not $script:Busy -and $lvFolders.SelectedItems.Count -gt 0 -and $lvFolders.SelectedItems[0].Tag) { Invoke-SpaceScan $lvFolders.SelectedItems[0].Tag } })
 $lvFiles.Add_DoubleClick({ if ($lvFiles.SelectedItems.Count -gt 0) { Open-Location $lvFiles.SelectedItems[0].Tag } })
 $btnCancel.Add_Click({ $script:Cancel = $true; $btnCancel.Enabled = $false; $lblStatus.Text = L 'Cancelando...' 'Cancelling...' })
