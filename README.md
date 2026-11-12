@@ -4,6 +4,8 @@ Herramienta gráfica, gratuita y de código abierto para **liberar espacio y opt
 
 Es un único script de PowerShell con interfaz gráfica: no hay que instalar nada, no tiene dependencias y puedes leer todo lo que hace antes de ejecutarlo.
 
+**[⬇️ Descargar la última versión](https://github.com/vicvinue/limpiador-windows/releases/latest)**
+
 > *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools and find large files. Every change is conservative and reversible. UI is in Spanish.
 
 ---
@@ -69,9 +71,11 @@ Analizador de las carpetas y los archivos más grandes de tu perfil, de Descarga
 
 ## Uso
 
-1. Descarga el repositorio (**Code → Download ZIP**) y descomprímelo.
+1. Descarga **`LimpiadorWindows-vX.Y.Z.zip`** de la [última versión publicada](https://github.com/vicvinue/limpiador-windows/releases/latest) y descomprímelo.
 2. Haz doble clic en **`Limpiador.bat`**.
 3. Acepta el aviso de permisos de Windows (UAC).
+
+> Descargar el código desde **Code → Download ZIP** también funciona, pero te dará la versión en desarrollo, que puede no ser estable.
 
 > **Aviso de SmartScreen / archivo bloqueado:** los archivos descargados de Internet vienen marcados por Windows. Si no se abre, haz clic derecho en `Limpiador.ps1` → *Propiedades* → marca **Desbloquear**, o ejecuta en PowerShell:
 > ```powershell
