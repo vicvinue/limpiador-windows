@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.0'
+$AppVersion = '1.3.1'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -837,7 +837,9 @@ function Get-OptStatus($o) {
 # ============================================================== 4. ESPACIO ====
 $script:BigMin = 20MB
 $script:ProtectedRoots = @($env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
-    "$SD\Recovery", "$SD\System Volume Information", ($SD + '\$Recycle.Bin')) | Where-Object { $_ }
+    "$SD\Recovery", "$SD\System Volume Information", ($SD + '\$Recycle.Bin'),
+    # Copias de los instaladores que Windows necesita para reparar, actualizar o desinstalar programas del usuario
+    "$TargetLocal\Package Cache") | Where-Object { $_ }
 
 function Test-Protected([string]$p) {
     if ([IO.Path]::GetFileName($p) -in 'pagefile.sys', 'hiberfil.sys', 'swapfile.sys', 'DumpStack.log.tmp') { return $true }
@@ -1160,7 +1162,7 @@ $DescDefault = @{
     clean = L 'Selecciona un elemento para ver qué se borra exactamente.' 'Select an item to see exactly what gets deleted.'
     bloat = L 'Selecciona una app para ver qué es. Solo se muestran apps de una lista segura: nunca componentes del sistema.' 'Select an app to see what it is. Only apps from a safe list are shown: never system components.'
     opt   = L 'Selecciona una acción para ver qué hace. Los ajustes guardan su valor original y se pueden deshacer.' 'Select an action to see what it does. Tweaks save their original value and can be undone.'
-    space = L 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows y de programas están protegidas.' 'Information only. Anything you send to the Recycle Bin can be restored from it. Windows and program folders are protected.'
+    space = L 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows, de programas y de copias de instaladores están protegidas.' 'Information only. Anything you send to the Recycle Bin can be restored from it. Windows, program and installer cache folders are protected.'
     update = L 'Selecciona una app para ver sus detalles. Guarda tu trabajo antes de actualizar: el instalador puede cerrar la app si está abierta.' 'Select an app to see its details. Save your work before updating: the installer may close the app if it is open.'
 }
 $lblDesc.Text = $DescDefault.clean
@@ -1844,26 +1846,35 @@ function Invoke-UpdRun {
         $a = "upgrade --id `"$($u.Id)`" --exact --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity"
         if ($u.Source) { $a += " --source `"$($u.Source)`"" }
         $r = $null
-        try {
-            $r = Invoke-Winget $a {
-                param($line)
-                $s = $line.Trim()
-                if (-not $s -or $s.Length -le 2) { return }
-                if ($s -match '[█▒]') {
-                    # Barra de progreso de la descarga: se muestra en la barra de estado, no en el registro
-                    $frac = $null
-                    if ($s -match '(\d+)\s*%') { $frac = [int]$Matches[1] / 100 }
-                    elseif ($s -match '([\d.,]+)\s*([KMG]?B)\s*/\s*([\d.,]+)\s*([KMG]?B)') {
-                        $m = @{ B = 1; KB = 1KB; MB = 1MB; GB = 1GB }
-                        $done  = [double]($Matches[1] -replace ',', '.') * $m[$Matches[2]]
-                        $total = [double]($Matches[3] -replace ',', '.') * $m[$Matches[4]]
-                        if ($total -gt 0) { $frac = [math]::Min(1, $done / $total) }
-                    }
-                    if ($null -ne $frac) { $progress.Value = [int](100 * ($script:UpdIndex - 1 + $frac) / $script:UpdTotal) }
-                    $lblStatus.Text = $script:UpdCurrent + ' · ' + (($s -replace '[█▒]+', ' ') -replace '\s+', ' ').Trim()
-                    return
+        $onLine = {
+            param($line)
+            $s = $line.Trim()
+            if (-not $s -or $s.Length -le 2) { return }
+            if ($s -match '[█▒]') {
+                # Barra de progreso de la descarga: se muestra en la barra de estado, no en el registro
+                $frac = $null
+                if ($s -match '(\d+)\s*%') { $frac = [int]$Matches[1] / 100 }
+                elseif ($s -match '([\d.,]+)\s*([KMG]?B)\s*/\s*([\d.,]+)\s*([KMG]?B)') {
+                    $m = @{ B = 1; KB = 1KB; MB = 1MB; GB = 1GB }
+                    $done  = [double]($Matches[1] -replace ',', '.') * $m[$Matches[2]]
+                    $total = [double]($Matches[3] -replace ',', '.') * $m[$Matches[4]]
+                    if ($total -gt 0) { $frac = [math]::Min(1, $done / $total) }
                 }
-                Write-Log "  $s"
+                if ($null -ne $frac) { $progress.Value = [int](100 * ($script:UpdIndex - 1 + $frac) / $script:UpdTotal) }
+                $lblStatus.Text = $script:UpdCurrent + ' · ' + (($s -replace '[█▒]+', ' ') -replace '\s+', ' ').Trim()
+                return
+            }
+            Write-Log "  $s"
+        }
+        try {
+            $r = Invoke-Winget $a $onLine
+            # 0x8A150014: winget no encuentra el paquete con ese Id y origen. Pasa cuando winget asocia la app a un
+            # paquete de un origen (p. ej. la Store) pero se instaló desde otro (p. ej. GitHub). Se reintenta con el
+            # nombre exacto de la app instalada y sin fijar el origen, para que winget elija el paquete que corresponde.
+            if ($r.Code -eq -1978335212 -and $u.Name -and -not $u.Name.EndsWith([string][char]0x2026)) {
+                Write-Log (L '  winget no encontró el paquete por su Id; se reintenta por el nombre de la app...' '  winget did not find the package by its Id; retrying by the app name...')
+                $a2 = "upgrade --name `"$($u.Name)`" --exact --silent --include-unknown --accept-package-agreements --accept-source-agreements --disable-interactivity"
+                $r = Invoke-Winget $a2 $onLine
             }
         } catch { Write-Log ('  Error: ' + $_.Exception.Message) }
 

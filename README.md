@@ -59,7 +59,7 @@ Lista las aplicaciones instaladas que tienen una versión nueva, usando **winget
 ### 📊 Espacio
 Analizador de las carpetas y los archivos más grandes de tu perfil, de Descargas, de una unidad o de cualquier carpeta.
 - Doble clic para entrar en una carpeta, y opción para abrir su ubicación en el Explorador.
-- **Enviar a la papelera** en lugar de borrar, para poder recuperarlo. Las carpetas de Windows y de los programas están protegidas.
+- **Enviar a la papelera** en lugar de borrar, para poder recuperarlo. Las carpetas de Windows, las de los programas y las copias de instaladores (`Package Cache`) están protegidas.
 
 ### 🌐 Idioma / Language
 La interfaz está en **español e inglés**:
