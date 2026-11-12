@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.1'
+$AppVersion = '1.3.2'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1213,12 +1213,12 @@ $TabButtons = [ordered]@{
     bloat = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Desinstalar seleccionadas' 'Uninstall selected') $true $Danger))
     opt   = @((New-Btn (L 'Deshacer ajustes' 'Undo tweaks') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Aplicar seleccionadas' 'Apply selected') $true))
     space = @((New-Btn (L 'Volver a analizar' 'Scan again') $false), (New-Btn (L 'Abrir ubicación' 'Open location') $false), (New-Btn (L 'Enviar a la papelera' 'Send to Recycle Bin') $true $Danger))
-    update = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Actualizar seleccionadas' 'Update selected') $true))
+    update = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Ignorar / restaurar' 'Ignore / restore') $false), (New-Btn (L 'Actualizar seleccionadas' 'Update selected') $true))
 }
 $btnAnalyze, $btnRecom, $btnNone, $btnClean                       = $TabButtons.clean
 $btnBloatReload, $btnBloatRecom, $btnBloatNone, $btnBloatRemove   = $TabButtons.bloat
 $btnOptUndo, $btnOptRecom, $btnOptNone, $btnOptRun                = $TabButtons.opt
-$btnUpdReload, $btnUpdRecom, $btnUpdNone, $btnUpdRun              = $TabButtons.update
+$btnUpdReload, $btnUpdRecom, $btnUpdNone, $btnUpdPin, $btnUpdRun = $TabButtons.update
 $btnSpRescan, $btnSpOpen, $btnSpTrash                             = $TabButtons.space
 $btnCancel = New-Btn (L 'Cancelar' 'Cancel') $false
 $btnCancel.Visible = $false
@@ -1797,32 +1797,48 @@ function Update-UpdList {
         # Sin tabla: o no hay actualizaciones o hubo un error. Se muestra lo que dijo winget.
         foreach ($l in $r.Lines) { $s = $l.Trim(); if ($s -and -not (Test-WingetNoise $s)) { Write-Log "  $s" } }
     }
+    foreach ($u in $items) { $u | Add-Member -NotePropertyName Pinned -NotePropertyValue $false }
+
+    # Apps ignoradas (fijadas con "winget pin"): aparecen solo al incluir las fijadas
+    $pinned = @()
+    if ($r) {
+        try {
+            $rp = Invoke-Winget 'upgrade --include-unknown --include-pinned --accept-source-agreements --disable-interactivity'
+            $known = @{}; foreach ($u in $items) { $known[$u.Id] = $true }
+            $pinned = @(ConvertFrom-WingetTable $rp.Lines | Where-Object { -not $known.ContainsKey($_.Id) })
+            foreach ($u in $pinned) { $u | Add-Member -NotePropertyName Pinned -NotePropertyValue $true }
+        } catch { }
+    }
 
     $GU1 = L 'Actualizaciones disponibles' 'Available updates'
     $GU2 = L 'Versión instalada desconocida (revísalas antes de actualizar)' 'Unknown installed version (check them before updating)'
+    $GU3 = L 'Ignoradas (no se actualizan; "Ignorar / restaurar" las devuelve a la lista)' 'Ignored (not updated; "Ignore / restore" brings them back)'
     $ug = [ordered]@{}
-    foreach ($name in $GU1, $GU2) { $ug[$name] = New-Object System.Windows.Forms.ListViewGroup($name, $name); [void]$updList.Groups.Add($ug[$name]) }
+    foreach ($name in $GU1, $GU2, $GU3) { $ug[$name] = New-Object System.Windows.Forms.ListViewGroup($name, $name); [void]$updList.Groups.Add($ug[$name]) }
     $updList.BeginUpdate()
-    foreach ($u in $items) {
+    foreach ($u in ($items + $pinned)) {
         $isSelf = $u.Id -eq 'Microsoft.AppInstaller'
-        $u | Add-Member -NotePropertyName Default -NotePropertyValue ((-not $u.Unknown) -and (-not $isSelf))
-        $note = if ($u.Unknown) { L 'winget no conoce la versión instalada: puede reinstalarla aunque ya esté al día.' 'winget does not know the installed version: it may reinstall it even if it is up to date.' }
+        $u | Add-Member -NotePropertyName Default -NotePropertyValue ((-not $u.Unknown) -and (-not $isSelf) -and (-not $u.Pinned))
+        $note = if ($u.Pinned) { L 'Ignorada: winget no la ofrece para actualizar. Márcala y pulsa "Ignorar / restaurar" para volver a verla.' 'Ignored: winget does not offer it for update. Check it and click "Ignore / restore" to bring it back.' }
+                elseif ($u.Unknown) { L 'winget no conoce la versión instalada: puede reinstalarla aunque ya esté al día. Si sigue apareciendo después de actualizar, puedes ignorarla.' 'winget does not know the installed version: it may reinstall it even if it is up to date. If it keeps showing up after updating, you can ignore it.' }
                 elseif ($isSelf) { L 'Es el propio winget: mejor actualizarlo desde Microsoft Store.' 'This is winget itself: better update it from the Microsoft Store.' }
                 else { '' }
         $u | Add-Member -NotePropertyName Note -NotePropertyValue $note
-        $grp = if ($u.Unknown) { $GU2 } else { $GU1 }
+        $grp = if ($u.Pinned) { $GU3 } elseif ($u.Unknown) { $GU2 } else { $GU1 }
         $ver = if ($u.Unknown) { L 'Desconocida' 'Unknown' } else { $u.Version }
         Add-LVItem $updList $ug $grp $u.Name @($ver, $u.Available, $u.Id) $u $u.Default $true
     }
     $updList.EndUpdate()
-    Write-Log (L "winget: $($items.Count) actualizaciones disponibles." "winget: $($items.Count) updates available.")
+    $msg = L "winget: $($items.Count) actualizaciones disponibles." "winget: $($items.Count) updates available."
+    if ($pinned.Count -gt 0) { $msg += L " Ignoradas: $($pinned.Count)." " Ignored: $($pinned.Count)." }
+    Write-Log $msg
     Set-Busy $false
     Update-Selection
 }
 
 function Invoke-UpdRun {
-    $sel = @($updList.Items | Where-Object { $_.Checked })
-    if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna actualización seleccionada.' 'No update is selected.'); return }
+    $sel = @($updList.Items | Where-Object { $_.Checked -and -not $_.Tag.Pinned })
+    if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna actualización seleccionada (las apps ignoradas no se actualizan).' 'No update is selected (ignored apps are not updated).'); return }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name + '  →  ' + $_.Tag.Available }) -join "`n"
     $msg = L "Se van a actualizar $($sel.Count) apps:`n`n$names`n`nGuarda tu trabajo: los instaladores pueden cerrar estas apps si están abiertas. ¿Continuar?" "$($sel.Count) apps will be updated:`n`n$names`n`nSave your work: the installers may close these apps if they are open. Continue?"
     if (-not (Confirm-Action $msg (L 'Confirmar actualización' 'Confirm update'))) { return }
@@ -1880,6 +1896,7 @@ function Invoke-UpdRun {
 
         if ($r -and $r.Code -in 0, 3010, 1641) {
             if ($r.Code -ne 0) { $reboot = $true; Write-Log (L '  OK (requiere reiniciar)' '  OK (restart required)') } else { Write-Log '  OK' }
+            if ($u.Unknown) { Write-Log (L '  Nota: el instalador de esta app no indica su versión a Windows, así que winget seguirá ofreciéndola. Si vuelve a aparecer, márcala y pulsa "Ignorar / restaurar".' '  Note: this app''s installer does not report its version to Windows, so winget will keep offering it. If it shows up again, check it and click "Ignore / restore".') }
             $updList.Items.Remove($it)
             $ok++
         } else {
@@ -1899,6 +1916,41 @@ function Invoke-UpdRun {
     if ($fail -gt 0) { $extra += L "`nCon error: $fail (detalles en el registro inferior)" "`nFailed: $fail (details in the log below)" }
     if ($reboot) { $extra += L "`n`nAlguna actualización necesita reiniciar el equipo para terminar." "`n`nSome updates need a restart to finish." }
     Show-Info ((L "Actualización completada.`n`nActualizadas: $ok" "Update completed.`n`nUpdated: $ok") + $extra)
+}
+
+# Ignorar (winget pin add) o restaurar (winget pin remove) las apps marcadas. Es reversible.
+function Invoke-UpdPin {
+    $sel = @($updList.Items | Where-Object { $_.Checked })
+    if ($sel.Count -eq 0) { Show-Info (L 'Marca las apps que quieres ignorar o restaurar.' 'Check the apps you want to ignore or restore.'); return }
+    $toPin   = @($sel | Where-Object { -not $_.Tag.Pinned })
+    $toUnpin = @($sel | Where-Object { $_.Tag.Pinned })
+    $msg = ''
+    if ($toPin.Count)   { $msg += (L "Ignorar (winget dejará de ofrecerlas para actualizar):`n" "Ignore (winget will stop offering them for update):`n") + (($toPin | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n") + "`n`n" }
+    if ($toUnpin.Count) { $msg += (L "Restaurar (volverán a aparecer como actualizables):`n" "Restore (they will show up as updatable again):`n") + (($toUnpin | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n") + "`n`n" }
+    $msg += L '¿Continuar?' 'Continue?'
+    if (-not (Confirm-Action $msg (L 'Ignorar / restaurar' 'Ignore / restore'))) { return }
+
+    Set-Busy $true
+    Write-Log (L '===== Ignorar / restaurar actualizaciones =====' '===== Ignore / restore updates =====')
+    $logLine = { param($line) $s = $line.Trim(); if ($s -and -not (Test-WingetNoise $s)) { Write-Log "  $s" } }
+    $ok = 0; $fail = 0
+    foreach ($it in $sel) {
+        $u = $it.Tag
+        $verb = if ($u.Pinned) { 'remove' } else { 'add' }
+        Write-Log ($(if ($u.Pinned) { L 'Restaurando: ' 'Restoring: ' } else { L 'Ignorando: ' 'Ignoring: ' }) + "$($u.Name) ($($u.Id))")
+        $a = "pin $verb --id `"$($u.Id)`" --exact --accept-source-agreements --disable-interactivity"
+        if ($u.Source) { $a += " --source `"$($u.Source)`"" }
+        $r = $null
+        try { $r = Invoke-Winget $a $logLine } catch { Write-Log ('  Error: ' + $_.Exception.Message) }
+        if ($r -and $r.Code -eq 0) { $ok++ }
+        else {
+            if ($r) { Write-Log ((L '  Error: winget terminó con código ' '  Error: winget exited with code ') + ('0x{0:X8}' -f $r.Code)) }
+            $fail++
+        }
+    }
+    Write-Log (L "===== Fin. Correctas: $ok · Con error: $fail =====" "===== Done. Succeeded: $ok · Failed: $fail =====")
+    Set-Busy $false
+    Update-UpdList
 }
 
 # ================================================================ Eventos =====
@@ -1979,6 +2031,7 @@ $btnOptRecom.Add_Click({ foreach ($it in $optList.Items) { $it.Checked = $it.Tag
 # Actualizaciones
 $btnUpdReload.Add_Click({ Update-UpdList })
 $btnUpdRun.Add_Click({ Invoke-UpdRun })
+$btnUpdPin.Add_Click({ Invoke-UpdPin })
 $btnUpdNone.Add_Click({ foreach ($it in $updList.Items) { $it.Checked = $false } })
 $btnUpdRecom.Add_Click({ foreach ($it in $updList.Items) { $it.Checked = $it.Tag.Default } })
 

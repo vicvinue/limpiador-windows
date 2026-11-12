@@ -54,6 +54,7 @@ Lista las aplicaciones instaladas que tienen una versión nueva, usando **winget
 - El progreso y la salida de cada instalador aparecen en la consola de la parte inferior.
 - Las apps cuya versión instalada no se puede saber van en un grupo aparte y **no vienen marcadas**.
 - *Cancelar* detiene el proceso al terminar la app en curso: nunca interrumpe un instalador a medias.
+- **Ignorar / restaurar**: oculta las apps que no quieres actualizar o que winget ofrece siempre aunque ya estén al día. Pasa con programas cuyo instalador no indica su versión, como Epson Scan 2. Usa `winget pin` y se deshace con el mismo botón; las ignoradas aparecen en su propio grupo.
 - Si winget no está instalado, la pestaña lo indica. Se instala con *Instalador de aplicación* (App Installer) desde Microsoft Store.
 
 ### 📊 Espacio
