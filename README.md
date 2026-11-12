@@ -8,7 +8,7 @@ Es un único script de PowerShell con interfaz gráfica: no hay que instalar nad
 
 ![Pestaña Archivos basura del Limpiador de Windows](docs/captura-limpieza.png)
 
-> *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools and find large files. Every change is conservative and reversible. UI is in Spanish.
+> *English summary:* a single-file, dependency-free PowerShell GUI tool to safely clean junk files, remove preinstalled bloatware, run official Windows maintenance tools and find large files. Every change is conservative and reversible. **The interface is available in English and Spanish** and picks the language of your Windows automatically.
 
 ---
 
@@ -52,6 +52,12 @@ Todo ajuste guarda su valor original y se puede revertir con **Deshacer ajustes*
 Analizador de las carpetas y los archivos más grandes de tu perfil, de Descargas, de una unidad o de cualquier carpeta.
 - Doble clic para entrar en una carpeta, y opción para abrir su ubicación en el Explorador.
 - **Enviar a la papelera** en lugar de borrar, para poder recuperarlo. Las carpetas de Windows y de los programas están protegidas.
+
+### 🌐 Idioma / Language
+La interfaz está en **español e inglés**:
+- **Automático (por defecto):** español si Windows está en español (cualquier variante regional) e inglés en cualquier otro caso.
+- **Manual:** desplegable *Idioma / Language* en la cabecera. La elección se guarda y la aplicación se reinicia en el nuevo idioma.
+- **Línea de comandos:** `-Idioma es` o `-Idioma en` (alias `-Lang`).
 
 ---
 
@@ -98,6 +104,7 @@ powershell -ExecutionPolicy Bypass -File .\Limpiador.ps1 -Analizar
 |---|---|
 | `%LOCALAPPDATA%\LimpiadorWindows\limpieza.log` | Registro de todo lo que hace la herramienta |
 | `%LOCALAPPDATA%\LimpiadorWindows\ajustes-originales.json` | Valores originales de los ajustes, usados por *Deshacer ajustes* |
+| `%LOCALAPPDATA%\LimpiadorWindows\config.json` | Idioma elegido (si no es el automático) |
 
 ## Cómo deshacer cambios
 

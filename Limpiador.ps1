@@ -1,29 +1,31 @@
 ﻿#requires -Version 5.1
 <#
-    Limpiador de Windows
-    https://github.com/vicvinue
+    Limpiador de Windows / Windows Cleaner
+    https://github.com/vicvinue/limpiador-windows
 
-    Herramienta gráfica para liberar espacio y optimizar Windows 10/11 sin romper nada:
-      - Archivos basura: temporales, cachés, informes de errores, restos de actualizaciones...
-      - Bloatware: desinstala apps preinstaladas prescindibles (lista cerrada y conservadora).
-      - Optimizar: mantenimiento con herramientas oficiales de Windows y ajustes reversibles.
-      - Espacio: analizador de las carpetas y archivos más grandes.
+    Herramienta gráfica para liberar espacio y optimizar Windows 10/11 sin romper nada.
+    Graphical tool to free up space and optimize Windows 10/11 without breaking anything.
 
-    Principios de seguridad:
-      - Nunca toca documentos, programas instalados ni componentes del sistema.
-      - No sigue enlaces simbólicos ni uniones (junctions).
-      - Los archivos en uso se omiten.
-      - Todo ajuste guarda su valor original y se puede deshacer.
+      - Archivos basura / Junk files
+      - Bloatware
+      - Optimizar / Optimize
+      - Espacio / Disk space
 
-    Uso:
-        Limpiador.bat                                  Interfaz gráfica (pide permisos de administrador)
-        powershell -ExecutionPolicy Bypass -File Limpiador.ps1 -Analizar
-                                                       Solo muestra tamaños en consola, no borra nada
+    Idioma / Language:
+      Automático según el idioma de Windows (español si Windows está en español, inglés en otro caso).
+      Se puede cambiar desde la ventana o con -Idioma es|en.
+      Automatic from the Windows display language (Spanish if Windows is in Spanish, English otherwise).
+      Can be changed from the window or with -Idioma es|en (alias -Lang).
 
-    Licencia MIT. Se distribuye "tal cual", sin garantías.
+    Uso / Usage:
+        Limpiador.bat
+        powershell -ExecutionPolicy Bypass -File Limpiador.ps1 -Analizar [-Idioma en]
+
+    Licencia MIT / MIT License. Se distribuye "tal cual", sin garantías / Provided "as is", without warranty.
 #>
 param(
     [switch]$Analizar,
+    [Alias('Lang')][string]$Idioma = '',
     # Parámetros internos: el proceso elevado sigue limpiando el perfil del usuario que abrió la app,
     # aunque el administrador sea otra cuenta.
     [string]$TargetSid,
@@ -33,8 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppName    = 'Limpiador de Windows'
-$AppVersion = '1.1.1'
+$AppVersion = '1.2.0'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -50,17 +51,24 @@ if (-not $TargetProfile) { $TargetProfile = $env:USERPROFILE }
 if (-not $TargetLocal)   { $TargetLocal   = $env:LOCALAPPDATA }
 if (-not $TargetRoaming) { $TargetRoaming = $env:APPDATA }
 if (-not $TargetTemp)    { $TargetTemp    = $env:TEMP }
+$Idioma = "$Idioma".Trim().ToLower()
+if ($Idioma -notin '', 'auto', 'es', 'en') { $Idioma = '' }
+
+function Get-LaunchArgs([switch]$NoLang) {
+    $q = { param($s) '"' + $s + '"' }
+    $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', (& $q $PSCommandPath),
+        '-TargetSid', $TargetSid,
+        '-TargetProfile', (& $q $TargetProfile),
+        '-TargetLocal', (& $q $TargetLocal),
+        '-TargetRoaming', (& $q $TargetRoaming),
+        '-TargetTemp', (& $q $TargetTemp))
+    if ($Idioma -and -not $NoLang) { $a += @('-Idioma', $Idioma) }
+    return $a
+}
 
 if (-not $script:IsAdmin -and -not $Analizar) {
-    $q = { param($s) '"' + $s + '"' }
     try {
-        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ErrorAction Stop -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', (& $q $PSCommandPath),
-            '-TargetSid', $TargetSid,
-            '-TargetProfile', (& $q $TargetProfile),
-            '-TargetLocal', (& $q $TargetLocal),
-            '-TargetRoaming', (& $q $TargetRoaming),
-            '-TargetTemp', (& $q $TargetTemp))
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ErrorAction Stop -ArgumentList (Get-LaunchArgs)
         exit
     } catch {
         # El usuario rechazó el UAC: seguimos con permisos limitados.
@@ -76,6 +84,29 @@ $script:DataDir = Join-Path $TargetLocal 'LimpiadorWindows'
 try { New-Item -ItemType Directory -Force -Path $script:DataDir -ErrorAction Stop | Out-Null } catch { $script:DataDir = $env:TEMP }
 $script:LogFile    = Join-Path $script:DataDir 'limpieza.log'
 $script:BackupFile = Join-Path $script:DataDir 'ajustes-originales.json'
+$script:ConfigFile = Join-Path $script:DataDir 'config.json'
+
+# ------------------------------------------------------------------ Idioma ----
+function Get-Config {
+    try { return (Get-Content -Raw -LiteralPath $script:ConfigFile -ErrorAction Stop | ConvertFrom-Json) } catch { return $null }
+}
+function Save-Config([string]$lang) {
+    try { @{ lang = $lang } | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8 } catch { }
+}
+
+$cfg = Get-Config
+$script:LangPref = 'auto'
+if ($Idioma) { $script:LangPref = $Idioma }
+elseif ($cfg -and $cfg.lang -in 'auto', 'es', 'en') { $script:LangPref = $cfg.lang }
+$script:Lang = $script:LangPref
+if ($script:Lang -eq 'auto') {
+    $script:Lang = if ((Get-UICulture).TwoLetterISOLanguageName -eq 'es') { 'es' } else { 'en' }
+}
+
+# Devuelve el texto en el idioma activo / Returns the text in the active language
+function L([string]$es, [string]$en) { if ($script:Lang -eq 'es') { return $es } else { return $en } }
+
+$AppName = L 'Limpiador de Windows' 'Windows Cleaner'
 
 $script:LogBox   = $null
 $script:Busy     = $false
@@ -91,7 +122,7 @@ $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
 $script:IsVM     = [bool]("$($cs.Manufacturer) $($cs.Model)" -match 'Virtual|VMware|Parallels|VirtualBox|innotek|KVM|QEMU|Xen|Hyper-V')
 $script:IsLaptop = (-not $script:IsVM) -and [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue)
 $script:RamGB    = if ($cs) { [math]::Round($cs.TotalPhysicalMemory / 1GB) } else { 0 }
-$script:Machine  = if ($script:IsVM) { 'Máquina virtual' } elseif ($script:IsLaptop) { 'Portátil' } else { 'Sobremesa' }
+$script:Machine  = if ($script:IsVM) { L 'Máquina virtual' 'Virtual machine' } elseif ($script:IsLaptop) { L 'Portátil' 'Laptop' } else { L 'Sobremesa' 'Desktop' }
 
 # --------------------------------------------------------------- Utilidades ---
 function Pump {
@@ -100,7 +131,7 @@ function Pump {
 }
 
 function Format-Size([long]$b) {
-    if ($b -lt 0)   { return 'Desconocido' }
+    if ($b -lt 0)   { return (L 'Desconocido' 'Unknown') }
     if ($b -ge 1GB) { return '{0:N2} GB' -f ($b / 1GB) }
     if ($b -ge 1MB) { return '{0:N1} MB' -f ($b / 1MB) }
     if ($b -ge 1KB) { return '{0:N0} KB' -f ($b / 1KB) }
@@ -252,21 +283,30 @@ function Test-AnyTarget($cat) {
     return $false
 }
 
+$CG_SYS  = L 'Sistema' 'System'
+$CG_BROW = L 'Navegadores (solo caché)' 'Browsers (cache only)'
+$CG_APPS = L 'Aplicaciones (solo caché)' 'Apps (cache only)'
+$CG_DEV  = L 'Desarrollo (cachés de paquetes)' 'Development (package caches)'
+
+$N_SAFE_BROWSER = L 'Seguro. No borra historial, contraseñas ni sesiones.' 'Safe. Does not delete history, passwords or sessions.'
+$N_SAFE         = L 'Seguro.' 'Safe.'
+$N_SAFE_PKG     = L 'Seguro. Los paquetes se vuelven a descargar si hacen falta.' 'Safe. Packages are downloaded again when needed.'
+
 $Categories = @(
     # ---------------- Sistema ----------------
-    New-Cat -Id tempuser -Group 'Sistema' -Name 'Archivos temporales del usuario' `
-        -Note 'Seguro. Se omiten los archivos en uso y los de menos de 24 h.' `
-        -Desc 'Carpeta %TEMP%. Los programas dejan aquí archivos de instalación y trabajo que nunca borran.' `
+    New-Cat -Id tempuser -Group $CG_SYS -Name (L 'Archivos temporales del usuario' 'User temporary files') `
+        -Note (L 'Seguro. Se omiten los archivos en uso y los de menos de 24 h.' 'Safe. Files in use and files newer than 24 h are skipped.') `
+        -Desc (L 'Carpeta %TEMP%. Los programas dejan aquí archivos de instalación y trabajo que nunca borran.' 'The %TEMP% folder. Programs leave setup and working files here and never delete them.') `
         -Targets { T $TargetTemp -MinAgeDays 1 }
 
-    New-Cat -Id tempwin -Group 'Sistema' -Name 'Archivos temporales de Windows' -Admin `
-        -Note 'Seguro. Se omiten los archivos en uso y los de menos de 24 h.' `
-        -Desc 'Carpeta C:\Windows\Temp, usada por el sistema y los instaladores.' `
+    New-Cat -Id tempwin -Group $CG_SYS -Name (L 'Archivos temporales de Windows' 'Windows temporary files') -Admin `
+        -Note (L 'Seguro. Se omiten los archivos en uso y los de menos de 24 h.' 'Safe. Files in use and files newer than 24 h are skipped.') `
+        -Desc (L 'Carpeta C:\Windows\Temp, usada por el sistema y los instaladores.' 'The C:\Windows\Temp folder, used by the system and installers.') `
         -Targets { T "$W\Temp" -MinAgeDays 1 }
 
-    New-Cat -Id wupdate -Group 'Sistema' -Name 'Descargas de Windows Update' -Admin `
-        -Note 'Seguro. Son instaladores ya aplicados; se detiene el servicio un momento.' `
-        -Desc 'C:\Windows\SoftwareDistribution\Download. Windows vuelve a descargar lo que necesite.' `
+    New-Cat -Id wupdate -Group $CG_SYS -Name (L 'Descargas de Windows Update' 'Windows Update downloads') -Admin `
+        -Note (L 'Seguro. Son instaladores ya aplicados; se detiene el servicio un momento.' 'Safe. Already installed updates; the service is stopped briefly.') `
+        -Desc (L 'C:\Windows\SoftwareDistribution\Download. Windows vuelve a descargar lo que necesite.' 'C:\Windows\SoftwareDistribution\Download. Windows downloads again whatever it needs.') `
         -Targets { T "$W\SoftwareDistribution\Download" } `
         -Action {
             param($cat, $res)
@@ -277,9 +317,9 @@ $Categories = @(
             foreach ($s in $svcs) { try { Start-Service -Name $s.Name -ErrorAction Stop } catch { } }
         }
 
-    New-Cat -Id deliveryopt -Group 'Sistema' -Name 'Caché de Optimización de distribución' -Admin `
-        -Note 'Seguro. Copias de actualizaciones compartidas con otros PCs.' `
-        -Desc 'Caché que Windows usa para compartir actualizaciones en la red. Se borra con la herramienta oficial.' `
+    New-Cat -Id deliveryopt -Group $CG_SYS -Name (L 'Caché de Optimización de distribución' 'Delivery Optimization cache') -Admin `
+        -Note (L 'Seguro. Copias de actualizaciones compartidas con otros PCs.' 'Safe. Copies of updates shared with other PCs.') `
+        -Desc (L 'Caché que Windows usa para compartir actualizaciones en la red. Se borra con la herramienta oficial.' 'Cache Windows uses to share updates over the network. Cleared with the official tool.') `
         -Targets { T "$W\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache" } `
         -Action {
             param($cat, $res)
@@ -289,9 +329,9 @@ $Categories = @(
             foreach ($t in (Get-Targets $cat)) { Clear-Target $t $res }
         }
 
-    New-Cat -Id wer -Group 'Sistema' -Name 'Informes de errores de Windows' -Admin `
-        -Note 'Seguro. Informes de fallos antiguos.' `
-        -Desc 'Informes que Windows genera cuando un programa se cuelga o falla.' `
+    New-Cat -Id wer -Group $CG_SYS -Name (L 'Informes de errores de Windows' 'Windows Error Reporting files') -Admin `
+        -Note (L 'Seguro. Informes de fallos antiguos.' 'Safe. Old crash reports.') `
+        -Desc (L 'Informes que Windows genera cuando un programa se cuelga o falla.' 'Reports Windows creates when a program hangs or crashes.') `
         -Targets {
             T "$PD\Microsoft\Windows\WER\ReportArchive"
             T "$PD\Microsoft\Windows\WER\ReportQueue"
@@ -299,9 +339,9 @@ $Categories = @(
             T "$L\Microsoft\Windows\WER"
         }
 
-    New-Cat -Id dumps -Group 'Sistema' -Name 'Volcados de memoria por fallos' -Admin `
-        -Note 'Seguro. Solo sirven para diagnosticar pantallazos azules.' `
-        -Desc 'Archivos .dmp de pantallazos azules y programas cerrados inesperadamente. Pueden ocupar varios GB.' `
+    New-Cat -Id dumps -Group $CG_SYS -Name (L 'Volcados de memoria por fallos' 'Crash memory dumps') -Admin `
+        -Note (L 'Seguro. Solo sirven para diagnosticar pantallazos azules.' 'Safe. Only useful to diagnose blue screens.') `
+        -Desc (L 'Archivos .dmp de pantallazos azules y programas cerrados inesperadamente. Pueden ocupar varios GB.' '.dmp files from blue screens and crashed programs. They can take several GB.') `
         -Targets {
             T "$L\CrashDumps"
             T "$W\Minidump"
@@ -309,24 +349,24 @@ $Categories = @(
             T "$W\LiveKernelReports" -Filter '*.dmp'
         }
 
-    New-Cat -Id thumbs -Group 'Sistema' -Name 'Caché de miniaturas' `
-        -Note 'Seguro. Se regeneran solas; parte puede estar en uso.' `
-        -Desc 'Vistas previas de imágenes y vídeos del Explorador. Se vuelven a crear al abrir las carpetas.' `
+    New-Cat -Id thumbs -Group $CG_SYS -Name (L 'Caché de miniaturas' 'Thumbnail cache') `
+        -Note (L 'Seguro. Se regeneran solas; parte puede estar en uso.' 'Safe. Rebuilt automatically; some may be in use.') `
+        -Desc (L 'Vistas previas de imágenes y vídeos del Explorador. Se vuelven a crear al abrir las carpetas.' 'Image and video previews in File Explorer. They are recreated when folders are opened.') `
         -Targets { T "$L\Microsoft\Windows\Explorer" -Filter 'thumbcache_*.db' -NoRecurse }
 
-    New-Cat -Id inetcache -Group 'Sistema' -Name 'Caché de Internet de Windows' `
-        -Note 'Seguro.' `
-        -Desc 'Caché web usada por componentes de Windows, Office y aplicaciones antiguas.' `
+    New-Cat -Id inetcache -Group $CG_SYS -Name (L 'Caché de Internet de Windows' 'Windows Internet cache') `
+        -Note $N_SAFE `
+        -Desc (L 'Caché web usada por componentes de Windows, Office y aplicaciones antiguas.' 'Web cache used by Windows components, Office and older apps.') `
         -Targets { T "$L\Microsoft\Windows\INetCache" }
 
-    New-Cat -Id logs -Group 'Sistema' -Name 'Registros (logs) antiguos de Windows' -Admin `
-        -Note 'Seguro. Solo archivos de más de 7 días.' `
-        -Desc 'Archivos de registro de C:\Windows\Logs (instalaciones, CBS, DISM...).' `
+    New-Cat -Id logs -Group $CG_SYS -Name (L 'Registros (logs) antiguos de Windows' 'Old Windows log files') -Admin `
+        -Note (L 'Seguro. Solo archivos de más de 7 días.' 'Safe. Only files older than 7 days.') `
+        -Desc (L 'Archivos de registro de C:\Windows\Logs (instalaciones, CBS, DISM...).' 'Log files in C:\Windows\Logs (setup, CBS, DISM...).') `
         -Targets { T "$W\Logs" -MinAgeDays 7 }
 
-    New-Cat -Id shaders -Group 'Sistema' -Name 'Caché de sombreadores (DirectX / GPU)' `
-        -Note 'Seguro. Los juegos pueden tardar algo más la primera vez.' `
-        -Desc 'Cachés de DirectX, NVIDIA, AMD e Intel. Se regeneran automáticamente.' `
+    New-Cat -Id shaders -Group $CG_SYS -Name (L 'Caché de sombreadores (DirectX / GPU)' 'Shader cache (DirectX / GPU)') `
+        -Note (L 'Seguro. Los juegos pueden tardar algo más la primera vez.' 'Safe. Games may take a bit longer to load the first time.') `
+        -Desc (L 'Cachés de DirectX, NVIDIA, AMD e Intel. Se regeneran automáticamente.' 'DirectX, NVIDIA, AMD and Intel caches. Rebuilt automatically.') `
         -Targets {
             T "$L\D3DSCache"
             T "$L\NVIDIA\DXCache"
@@ -339,9 +379,9 @@ $Categories = @(
             T "$UP\AppData\LocalLow\Intel\ShaderCache"
         }
 
-    New-Cat -Id recycle -Group 'Sistema' -Name 'Papelera de reciclaje' -Off `
-        -Note 'Revisa antes que no haya nada que quieras recuperar.' `
-        -Desc 'Vacía la papelera de todas las unidades. Lo borrado ya no se podrá recuperar.' `
+    New-Cat -Id recycle -Group $CG_SYS -Name (L 'Papelera de reciclaje' 'Recycle Bin') -Off `
+        -Note (L 'Revisa antes que no haya nada que quieras recuperar.' 'Check first that there is nothing you want to recover.') `
+        -Desc (L 'Vacía la papelera de todas las unidades. Lo borrado ya no se podrá recuperar.' 'Empties the Recycle Bin on all drives. Deleted items can no longer be recovered.') `
         -Targets {
             foreach ($d in [IO.DriveInfo]::GetDrives()) {
                 if ($d.DriveType -eq 'Fixed' -and $d.IsReady) { T (Join-Path $d.RootDirectory.FullName ('$Recycle.Bin\' + $TargetSid)) }
@@ -353,19 +393,19 @@ $Categories = @(
             else { Clear-RecycleBin -Force -ErrorAction SilentlyContinue }
         }
 
-    New-Cat -Id dism -Group 'Sistema' -Name 'Limpieza del almacén de componentes (WinSxS)' -Admin -Off `
-        -Note 'Seguro (herramienta oficial DISM). Lento: 5-20 minutos.' `
-        -Desc 'Ejecuta "DISM /Online /Cleanup-Image /StartComponentCleanup" para quitar versiones antiguas de componentes reemplazados por actualizaciones.' `
+    New-Cat -Id dism -Group $CG_SYS -Name (L 'Limpieza del almacén de componentes (WinSxS)' 'Component store cleanup (WinSxS)') -Admin -Off `
+        -Note (L 'Seguro (herramienta oficial DISM). Lento: 5-20 minutos.' 'Safe (official DISM tool). Slow: 5-20 minutes.') `
+        -Desc (L 'Ejecuta "DISM /Online /Cleanup-Image /StartComponentCleanup" para quitar versiones antiguas de componentes reemplazados por actualizaciones.' 'Runs "DISM /Online /Cleanup-Image /StartComponentCleanup" to remove old versions of components superseded by updates.') `
         -Size { -1 } `
         -Action {
             param($cat, $res)
             $c = Invoke-Tool 'dism.exe' @('/Online', '/Cleanup-Image', '/StartComponentCleanup')
-            if ($c -ne 0) { Write-Log "  DISM terminó con código $c." }
+            if ($c -ne 0) { Write-Log (L "  DISM terminó con código $c." "  DISM exited with code $c.") }
         }
 
-    New-Cat -Id winold -Group 'Sistema' -Name 'Instalación anterior de Windows (Windows.old)' -Admin -Off -Optional `
-        -Note 'No rompe nada, pero ya no podrás volver a la versión anterior.' `
-        -Desc 'Restos de una actualización de Windows (Windows.old, $Windows.~BT, $Windows.~WS). Se borra con el Liberador de espacio oficial.' `
+    New-Cat -Id winold -Group $CG_SYS -Name (L 'Instalación anterior de Windows (Windows.old)' 'Previous Windows installation (Windows.old)') -Admin -Off -Optional `
+        -Note (L 'No rompe nada, pero ya no podrás volver a la versión anterior.' 'Breaks nothing, but you will no longer be able to roll back.') `
+        -Desc (L 'Restos de una actualización de Windows (Windows.old, $Windows.~BT, $Windows.~WS). Se borra con el Liberador de espacio oficial.' 'Leftovers from a Windows upgrade (Windows.old, $Windows.~BT, $Windows.~WS). Removed with the official Disk Cleanup tool.') `
         -Targets {
             T "$SD\Windows.old"
             T ($SD + '\$Windows.~BT')
@@ -388,37 +428,31 @@ $Categories = @(
         }
 
     # ---------------- Navegadores (solo caché: no toca historial, contraseñas ni cookies) ----------------
-    New-Cat -Id chrome -Group 'Navegadores (solo caché)' -Name 'Google Chrome' -Optional -Procs 'chrome' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de páginas, código y GPU de todos los perfiles de Chrome. Cierra Chrome para limpiar todo.' `
+    New-Cat -Id chrome -Group $CG_BROW -Name 'Google Chrome' -Optional -Procs 'chrome' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de páginas, código y GPU de todos los perfiles de Chrome. Cierra Chrome para limpiar todo.' 'Page, code and GPU cache of all Chrome profiles. Close Chrome to clean everything.') `
         -Targets { Get-ChromiumTargets "$L\Google\Chrome\User Data" }
 
-    New-Cat -Id edge -Group 'Navegadores (solo caché)' -Name 'Microsoft Edge' -Optional -Procs 'msedge' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de páginas, código y GPU de todos los perfiles de Edge. Cierra Edge para limpiar todo.' `
+    New-Cat -Id edge -Group $CG_BROW -Name 'Microsoft Edge' -Optional -Procs 'msedge' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de páginas, código y GPU de todos los perfiles de Edge. Cierra Edge para limpiar todo.' 'Page, code and GPU cache of all Edge profiles. Close Edge to clean everything.') `
         -Targets { Get-ChromiumTargets "$L\Microsoft\Edge\User Data" }
 
-    New-Cat -Id brave -Group 'Navegadores (solo caché)' -Name 'Brave' -Optional -Procs 'brave' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de todos los perfiles de Brave.' `
+    New-Cat -Id brave -Group $CG_BROW -Name 'Brave' -Optional -Procs 'brave' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de todos los perfiles de Brave.' 'Cache of all Brave profiles.') `
         -Targets { Get-ChromiumTargets "$L\BraveSoftware\Brave-Browser\User Data" }
 
-    New-Cat -Id vivaldi -Group 'Navegadores (solo caché)' -Name 'Vivaldi' -Optional -Procs 'vivaldi' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de todos los perfiles de Vivaldi.' `
+    New-Cat -Id vivaldi -Group $CG_BROW -Name 'Vivaldi' -Optional -Procs 'vivaldi' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de todos los perfiles de Vivaldi.' 'Cache of all Vivaldi profiles.') `
         -Targets { Get-ChromiumTargets "$L\Vivaldi\User Data" }
 
-    New-Cat -Id opera -Group 'Navegadores (solo caché)' -Name 'Opera' -Optional -Procs 'opera' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de Opera y Opera GX.' `
+    New-Cat -Id opera -Group $CG_BROW -Name 'Opera' -Optional -Procs 'opera' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de Opera y Opera GX.' 'Opera and Opera GX cache.') `
         -Targets {
             T "$L\Opera Software\Opera Stable\Cache"
             T "$L\Opera Software\Opera GX Stable\Cache"
         }
 
-    New-Cat -Id firefox -Group 'Navegadores (solo caché)' -Name 'Mozilla Firefox' -Optional -Procs 'firefox' `
-        -Note 'Seguro. No borra historial, contraseñas ni sesiones.' `
-        -Desc 'Caché de todos los perfiles de Firefox.' `
+    New-Cat -Id firefox -Group $CG_BROW -Name 'Mozilla Firefox' -Optional -Procs 'firefox' -Note $N_SAFE_BROWSER `
+        -Desc (L 'Caché de todos los perfiles de Firefox.' 'Cache of all Firefox profiles.') `
         -Targets {
             Get-ChildItem -LiteralPath "$L\Mozilla\Firefox\Profiles" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
                 T (Join-Path $_.FullName 'cache2')
@@ -427,41 +461,40 @@ $Categories = @(
         }
 
     # ---------------- Aplicaciones ----------------
-    New-Cat -Id discord -Group 'Aplicaciones (solo caché)' -Name 'Discord' -Optional -Procs 'Discord' `
-        -Note 'Seguro. No cierra tu sesión.' -Desc 'Caché de imágenes y código de Discord.' `
+    New-Cat -Id discord -Group $CG_APPS -Name 'Discord' -Optional -Procs 'Discord' `
+        -Note (L 'Seguro. No cierra tu sesión.' 'Safe. Does not sign you out.') `
+        -Desc (L 'Caché de imágenes y código de Discord.' 'Discord image and code cache.') `
         -Targets { T "$R\discord\Cache"; T "$R\discord\Code Cache"; T "$R\discord\GPUCache" }
 
-    New-Cat -Id teams -Group 'Aplicaciones (solo caché)' -Name 'Microsoft Teams (clásico)' -Optional -Procs 'Teams' `
-        -Note 'Seguro.' -Desc 'Caché de Teams clásico.' `
+    New-Cat -Id teams -Group $CG_APPS -Name (L 'Microsoft Teams (clásico)' 'Microsoft Teams (classic)') -Optional -Procs 'Teams' `
+        -Note $N_SAFE -Desc (L 'Caché de Teams clásico.' 'Classic Teams cache.') `
         -Targets {
             foreach ($c in 'Cache', 'Code Cache', 'GPUCache', 'Service Worker\CacheStorage', 'tmp') { T "$R\Microsoft\Teams\$c" }
         }
 
-    New-Cat -Id vscode -Group 'Aplicaciones (solo caché)' -Name 'Visual Studio Code' -Optional -Procs 'Code' `
-        -Note 'Seguro. No toca extensiones ni ajustes.' -Desc 'Cachés y logs de VS Code.' `
+    New-Cat -Id vscode -Group $CG_APPS -Name 'Visual Studio Code' -Optional -Procs 'Code' `
+        -Note (L 'Seguro. No toca extensiones ni ajustes.' 'Safe. Does not touch extensions or settings.') `
+        -Desc (L 'Cachés y logs de VS Code.' 'VS Code caches and logs.') `
         -Targets {
             foreach ($c in 'Cache', 'CachedData', 'Code Cache', 'GPUCache', 'CachedExtensionVSIXs', 'logs') { T "$R\Code\$c" }
         }
 
-    New-Cat -Id steam -Group 'Aplicaciones (solo caché)' -Name 'Steam (navegador interno)' -Optional -Procs 'steam', 'steamwebhelper' `
-        -Note 'Seguro. No toca juegos.' -Desc 'Caché web de la tienda/comunidad de Steam.' `
+    New-Cat -Id steam -Group $CG_APPS -Name (L 'Steam (navegador interno)' 'Steam (built-in browser)') -Optional -Procs 'steam', 'steamwebhelper' `
+        -Note (L 'Seguro. No toca juegos.' 'Safe. Does not touch games.') `
+        -Desc (L 'Caché web de la tienda/comunidad de Steam.' 'Web cache of the Steam store/community.') `
         -Targets { T "$L\Steam\htmlcache" }
 
     # ---------------- Desarrollo ----------------
-    New-Cat -Id npm -Group 'Desarrollo (cachés de paquetes)' -Name 'Caché de npm' -Optional -Off `
-        -Note 'Seguro. Los paquetes se vuelven a descargar si hacen falta.' -Desc '%LOCALAPPDATA%\npm-cache' `
+    New-Cat -Id npm -Group $CG_DEV -Name (L 'Caché de npm' 'npm cache') -Optional -Off -Note $N_SAFE_PKG -Desc '%LOCALAPPDATA%\npm-cache' `
         -Targets { T "$L\npm-cache" }
 
-    New-Cat -Id pip -Group 'Desarrollo (cachés de paquetes)' -Name 'Caché de pip (Python)' -Optional -Off `
-        -Note 'Seguro. Los paquetes se vuelven a descargar si hacen falta.' -Desc '%LOCALAPPDATA%\pip\Cache' `
+    New-Cat -Id pip -Group $CG_DEV -Name (L 'Caché de pip (Python)' 'pip cache (Python)') -Optional -Off -Note $N_SAFE_PKG -Desc '%LOCALAPPDATA%\pip\Cache' `
         -Targets { T "$L\pip\Cache" }
 
-    New-Cat -Id nuget -Group 'Desarrollo (cachés de paquetes)' -Name 'Caché HTTP de NuGet' -Optional -Off `
-        -Note 'Seguro.' -Desc '%LOCALAPPDATA%\NuGet\v3-cache' `
+    New-Cat -Id nuget -Group $CG_DEV -Name (L 'Caché HTTP de NuGet' 'NuGet HTTP cache') -Optional -Off -Note $N_SAFE -Desc '%LOCALAPPDATA%\NuGet\v3-cache' `
         -Targets { T "$L\NuGet\v3-cache" }
 
-    New-Cat -Id yarn -Group 'Desarrollo (cachés de paquetes)' -Name 'Caché de Yarn' -Optional -Off `
-        -Note 'Seguro.' -Desc '%LOCALAPPDATA%\Yarn\Cache' `
+    New-Cat -Id yarn -Group $CG_DEV -Name (L 'Caché de Yarn' 'Yarn cache') -Optional -Off -Note $N_SAFE -Desc '%LOCALAPPDATA%\Yarn\Cache' `
         -Targets { T "$L\Yarn\Cache" }
 )
 
@@ -472,82 +505,90 @@ $Categories = @($Categories | Where-Object { -not $_.Optional -or (Test-AnyTarge
 # Solo se muestran apps de ESTA lista. Nada que no esté aquí se puede desinstalar
 # desde la aplicación (Store, Edge, componentes del sistema, controladores... quedan fuera).
 # Todas se pueden reinstalar desde Microsoft Store.
-$G1 = 'Recomendado quitar'
-$G2 = 'Opcional: quítala solo si no la usas'
-$G3 = 'Juegos y Xbox'
-function B($G, $P, $N, $D, $Note) { [pscustomobject]@{ G = $G; P = $P; N = $N; D = [bool]$D; Note = $Note } }
+$G1 = L 'Recomendado quitar' 'Recommended to remove'
+$G2 = L 'Opcional: quítala solo si no la usas' 'Optional: remove only if you do not use it'
+$G3 = L 'Juegos y Xbox' 'Games and Xbox'
+
+# B <grupo> <patrón> <marcada> <nombre ES> <nota ES> <nombre EN> <nota EN>  (nombre EN vacío = igual que ES)
+function B($G, $P, $D, $Nes, $NoteEs, $Nen, $NoteEn) {
+    if (-not $Nen) { $Nen = $Nes }
+    [pscustomobject]@{ G = $G; P = $P; D = [bool]$D; N = (L $Nes $Nen); Note = (L $NoteEs $NoteEn) }
+}
+$PromoEs = 'Acceso directo promocional.';       $PromoEn = 'Promotional shortcut.'
+$GameEs  = 'Juego promocional preinstalado.';  $GameEn  = 'Preinstalled promotional game.'
+$IfEs    = 'Quítala solo si no la usas.';       $IfEn    = 'Remove only if you do not use it.'
 
 $BloatCatalog = @(
-    B $G1 'Microsoft.BingNews'                  'Microsoft Noticias'            1 'App de noticias con publicidad.'
-    B $G1 'Microsoft.BingSearch'                'Microsoft Bing'                1 'App de búsqueda de Bing. La búsqueda de Windows sigue funcionando.'
-    B $G1 'Microsoft.News'                      'Noticias (antigua)'            1 'App de noticias.'
-    B $G1 'Microsoft.GetHelp'                   'Obtener ayuda'                 1 'Asistente de soporte online.'
-    B $G1 'Microsoft.Getstarted'                'Sugerencias'                   1 'Consejos y promociones de Windows.'
-    B $G1 'Microsoft.MicrosoftOfficeHub'        'Microsoft 365 (lanzador)'      1 'NO desinstala Office: solo la app promocional de Microsoft 365.'
-    B $G1 'Microsoft.M365Companions'            'Microsoft 365 Companions'      1 'Mini apps auxiliares de Microsoft 365. No afecta a Office.'
-    B $G1 'Microsoft.People'                    'Contactos (People)'            1 'App de contactos obsoleta.'
-    B $G1 'Microsoft.PowerAutomateDesktop'      'Power Automate'                1 'Automatización para empresas; casi nadie la usa en casa.'
-    B $G1 'Microsoft.WindowsFeedbackHub'        'Centro de opiniones'           1 'Para enviar comentarios a Microsoft.'
-    B $G1 'Microsoft.WindowsMaps'               'Mapas'                         1 'App de mapas sin mantenimiento.'
-    B $G1 'Microsoft.ZuneVideo'                 'Películas y TV'                1 'Tienda de vídeo de Microsoft (abandonada).'
-    B $G1 'Microsoft.549981C3F5F10'             'Cortana'                       1 'Asistente retirado por Microsoft.'
-    B $G1 'Microsoft.SkypeApp'                  'Skype'                         1 'Servicio cerrado por Microsoft en 2025.'
-    B $G1 'Microsoft.MixedReality.Portal'       'Portal de realidad mixta'      1 'Solo útil con gafas de realidad mixta.'
-    B $G1 'Microsoft.Microsoft3DViewer'         'Visor 3D'                      1 'Visor de modelos 3D.'
-    B $G1 'Microsoft.Print3D'                   'Print 3D'                      1 'Impresión 3D.'
-    B $G1 'Microsoft.Windows.DevHome'           'Dev Home'                      1 'Herramienta para desarrolladores retirada por Microsoft.'
-    B $G1 'Microsoft.Wallet'                    'Microsoft Pay'                 1 'Servicio retirado.'
-    B $G1 'Microsoft.Messaging'                 'Mensajes'                      1 'App obsoleta.'
-    B $G1 'Microsoft.OneConnect'                'Planes móviles'                1 'App de operadoras móviles.'
-    B $G1 'Microsoft.Office.Sway'               'Sway'                          1 'App de presentaciones web.'
-    B $G1 'MicrosoftCorporationII.MicrosoftFamily' 'Microsoft Family'           1 'Control parental online (se gestiona igual desde la web).'
-    B $G1 'Clipchamp.Clipchamp'                 'Clipchamp'                     1 'Editor de vídeo online preinstalado.'
-    B $G1 '*CandyCrush*'                        'Candy Crush'                   1 'Juego promocional preinstalado.'
-    B $G1 '*BubbleWitch*'                       'Bubble Witch'                  1 'Juego promocional preinstalado.'
-    B $G1 'king.com.*'                          'Juegos de King'                1 'Juego promocional preinstalado.'
-    B $G1 '*MarchofEmpires*'                    'March of Empires'              1 'Juego promocional preinstalado.'
-    B $G1 '*HiddenCity*'                        'Hidden City'                   1 'Juego promocional preinstalado.'
-    B $G1 '*RoyalRevolt*'                       'Royal Revolt'                  1 'Juego promocional preinstalado.'
-    B $G1 '*FarmVille*'                         'FarmVille'                     1 'Juego promocional preinstalado.'
-    B $G1 '*Facebook*'                          'Facebook'                      1 'Acceso directo promocional.'
-    B $G1 '*Instagram*'                         'Instagram'                     1 'Acceso directo promocional.'
-    B $G1 '*TikTok*'                            'TikTok'                        1 'Acceso directo promocional.'
-    B $G1 '*Twitter*'                           'Twitter / X'                   1 'Acceso directo promocional.'
-    B $G1 '*LinkedIn*'                          'LinkedIn'                      1 'Acceso directo promocional.'
-    B $G1 '*McAfee*'                            'McAfee (prueba)'               1 'Antivirus de prueba; Windows ya incluye Microsoft Defender.'
-    B $G1 '*Duolingo*'                          'Duolingo'                      1 'Acceso directo promocional.'
-    B $G1 '*PicsArt*'                           'PicsArt'                       1 'Acceso directo promocional.'
+    B $G1 'Microsoft.BingNews'                  1 'Microsoft Noticias'        'App de noticias con publicidad.'                         'Microsoft News'      'News app with ads.'
+    B $G1 'Microsoft.BingSearch'                1 'Microsoft Bing'            'App de búsqueda de Bing. La búsqueda de Windows sigue funcionando.' '' 'Bing search app. Windows search keeps working.'
+    B $G1 'Microsoft.News'                      1 'Noticias (antigua)'        'App de noticias.'                                        'News (legacy)'       'News app.'
+    B $G1 'Microsoft.GetHelp'                   1 'Obtener ayuda'             'Asistente de soporte online.'                            'Get Help'            'Online support assistant.'
+    B $G1 'Microsoft.Getstarted'                1 'Sugerencias'               'Consejos y promociones de Windows.'                      'Tips'                'Windows tips and promotions.'
+    B $G1 'Microsoft.MicrosoftOfficeHub'        1 'Microsoft 365 (lanzador)'  'NO desinstala Office: solo la app promocional de Microsoft 365.' 'Microsoft 365 (launcher)' 'Does NOT uninstall Office: only the Microsoft 365 promo app.'
+    B $G1 'Microsoft.M365Companions'            1 'Microsoft 365 Companions'  'Mini apps auxiliares de Microsoft 365. No afecta a Office.' '' 'Microsoft 365 helper mini apps. Does not affect Office.'
+    B $G1 'Microsoft.People'                    1 'Contactos (People)'        'App de contactos obsoleta.'                              'People'              'Obsolete contacts app.'
+    B $G1 'Microsoft.PowerAutomateDesktop'      1 'Power Automate'            'Automatización para empresas; casi nadie la usa en casa.' '' 'Business automation; rarely used at home.'
+    B $G1 'Microsoft.WindowsFeedbackHub'        1 'Centro de opiniones'       'Para enviar comentarios a Microsoft.'                    'Feedback Hub'        'Sends feedback to Microsoft.'
+    B $G1 'Microsoft.WindowsMaps'               1 'Mapas'                     'App de mapas sin mantenimiento.'                         'Maps'                'Unmaintained maps app.'
+    B $G1 'Microsoft.ZuneVideo'                 1 'Películas y TV'            'Tienda de vídeo de Microsoft (abandonada).'              'Movies & TV'         'Discontinued Microsoft video store.'
+    B $G1 'Microsoft.549981C3F5F10'             1 'Cortana'                   'Asistente retirado por Microsoft.'                       ''                    'Assistant retired by Microsoft.'
+    B $G1 'Microsoft.SkypeApp'                  1 'Skype'                     'Servicio cerrado por Microsoft en 2025.'                 ''                    'Service shut down by Microsoft in 2025.'
+    B $G1 'Microsoft.MixedReality.Portal'       1 'Portal de realidad mixta'  'Solo útil con gafas de realidad mixta.'                  'Mixed Reality Portal' 'Only useful with a mixed reality headset.'
+    B $G1 'Microsoft.Microsoft3DViewer'         1 'Visor 3D'                  'Visor de modelos 3D.'                                    '3D Viewer'           '3D model viewer.'
+    B $G1 'Microsoft.Print3D'                   1 'Print 3D'                  'Impresión 3D.'                                           ''                    '3D printing.'
+    B $G1 'Microsoft.Windows.DevHome'           1 'Dev Home'                  'Herramienta para desarrolladores retirada por Microsoft.' '' 'Developer tool retired by Microsoft.'
+    B $G1 'Microsoft.Wallet'                    1 'Microsoft Pay'             'Servicio retirado.'                                      ''                    'Retired service.'
+    B $G1 'Microsoft.Messaging'                 1 'Mensajes'                  'App obsoleta.'                                           'Messaging'           'Obsolete app.'
+    B $G1 'Microsoft.OneConnect'                1 'Planes móviles'            'App de operadoras móviles.'                              'Mobile Plans'        'Mobile carrier app.'
+    B $G1 'Microsoft.Office.Sway'               1 'Sway'                      'App de presentaciones web.'                              ''                    'Web presentation app.'
+    B $G1 'MicrosoftCorporationII.MicrosoftFamily' 1 'Microsoft Family'       'Control parental online (se gestiona igual desde la web).' '' 'Online parental controls (can be managed from the web).'
+    B $G1 'Clipchamp.Clipchamp'                 1 'Clipchamp'                 'Editor de vídeo online preinstalado.'                    ''                    'Preinstalled online video editor.'
+    B $G1 '*CandyCrush*'                        1 'Candy Crush'               $GameEs  '' $GameEn
+    B $G1 '*BubbleWitch*'                       1 'Bubble Witch'              $GameEs  '' $GameEn
+    B $G1 'king.com.*'                          1 'Juegos de King'            $GameEs  'King games' $GameEn
+    B $G1 '*MarchofEmpires*'                    1 'March of Empires'          $GameEs  '' $GameEn
+    B $G1 '*HiddenCity*'                        1 'Hidden City'               $GameEs  '' $GameEn
+    B $G1 '*RoyalRevolt*'                       1 'Royal Revolt'              $GameEs  '' $GameEn
+    B $G1 '*FarmVille*'                         1 'FarmVille'                 $GameEs  '' $GameEn
+    B $G1 '*Facebook*'                          1 'Facebook'                  $PromoEs '' $PromoEn
+    B $G1 '*Instagram*'                         1 'Instagram'                 $PromoEs '' $PromoEn
+    B $G1 '*TikTok*'                            1 'TikTok'                    $PromoEs '' $PromoEn
+    B $G1 '*Twitter*'                           1 'Twitter / X'               $PromoEs '' $PromoEn
+    B $G1 '*LinkedIn*'                          1 'LinkedIn'                  $PromoEs '' $PromoEn
+    B $G1 '*McAfee*'                            1 'McAfee (prueba)'           'Antivirus de prueba; Windows ya incluye Microsoft Defender.' 'McAfee (trial)' 'Trial antivirus; Windows already includes Microsoft Defender.'
+    B $G1 '*Duolingo*'                          1 'Duolingo'                  $PromoEs '' $PromoEn
+    B $G1 '*PicsArt*'                           1 'PicsArt'                   $PromoEs '' $PromoEn
 
-    B $G2 'Microsoft.BingWeather'               'El Tiempo'                     0 'App del tiempo.'
-    B $G2 'Microsoft.MicrosoftSolitaireCollection' 'Microsoft Solitaire'        0 'Solitario con anuncios.'
-    B $G2 'Microsoft.Todos'                     'Microsoft To Do'               0 'Lista de tareas.'
-    B $G2 'MicrosoftTeams'                      'Microsoft Teams (personal)'    0 'Versión gratuita/personal. No es el Teams del trabajo (MSTeams), que no se toca.'
-    B $G2 'MicrosoftWindows.Client.WebExperience' 'Widgets'                     0 'Panel de widgets (tiempo, noticias) de la barra de tareas.'
-    B $G2 'Microsoft.Copilot'                   'Copilot'                       0 'Asistente de IA de Microsoft.'
-    B $G2 'Microsoft.MicrosoftPCManager'        'Microsoft PC Manager'          0 'Optimizador de Microsoft (esta app ya hace lo mismo).'
-    B $G2 'Microsoft.OutlookForWindows'         'Outlook (nuevo)'               0 'Cliente de correo. No afecta a Outlook de Office.'
-    B $G2 'microsoft.windowscommunicationsapps' 'Correo y Calendario'           0 'Apps antiguas de correo.'
-    B $G2 'Microsoft.YourPhone'                 'Enlace móvil'                  0 'Conecta tu móvil con el PC.'
-    B $G2 'Microsoft.ZuneMusic'                 'Reproductor multimedia'        0 'Reproductor de música y vídeo de Windows.'
-    B $G2 'Microsoft.WindowsSoundRecorder'      'Grabadora de sonido'           0 'Grabadora de audio.'
-    B $G2 'Microsoft.WindowsAlarms'             'Reloj / Alarmas'               0 'Alarmas, temporizador y sesiones de concentración.'
-    B $G2 'Microsoft.WindowsCamera'             'Cámara'                        0 'App de cámara.'
-    B $G2 'Microsoft.MicrosoftStickyNotes'      'Notas rápidas'                 0 'Notas adhesivas.'
-    B $G2 'Microsoft.Office.OneNote'            'OneNote para Windows 10'       0 'Versión antigua de OneNote.'
-    B $G2 'Microsoft.MicrosoftJournal'          'Microsoft Journal'             0 'Notas a mano alzada.'
-    B $G2 'MicrosoftCorporationII.QuickAssist'  'Asistencia rápida'             0 'Soporte remoto entre PCs.'
-    B $G2 'SpotifyAB.SpotifyMusic'              'Spotify'                       0 'Quítala solo si no la usas.'
-    B $G2 '*Netflix*'                           'Netflix'                       0 'Quítala solo si no la usas.'
-    B $G2 'Disney.*'                            'Disney+'                       0 'Quítala solo si no la usas.'
-    B $G2 'AmazonVideo.PrimeVideo'              'Prime Video'                   0 'Quítala solo si no la usas.'
-    B $G2 '5319275A.WhatsAppDesktop'            'WhatsApp'                      0 'Quítala solo si no la usas.'
+    B $G2 'Microsoft.BingWeather'               0 'El Tiempo'                 'App del tiempo.'                                         'Weather'             'Weather app.'
+    B $G2 'Microsoft.MicrosoftSolitaireCollection' 0 'Microsoft Solitaire'    'Solitario con anuncios.'                                 ''                    'Solitaire with ads.'
+    B $G2 'Microsoft.Todos'                     0 'Microsoft To Do'           'Lista de tareas.'                                        ''                    'To-do list.'
+    B $G2 'MicrosoftTeams'                      0 'Microsoft Teams (personal)' 'Versión gratuita/personal. No es el Teams del trabajo (MSTeams), que no se toca.' '' 'Free/personal version. Not Teams for work (MSTeams), which is never touched.'
+    B $G2 'MicrosoftWindows.Client.WebExperience' 0 'Widgets'                 'Panel de widgets (tiempo, noticias) de la barra de tareas.' '' 'Taskbar widgets panel (weather, news).'
+    B $G2 'Microsoft.Copilot'                   0 'Copilot'                   'Asistente de IA de Microsoft.'                           ''                    'Microsoft AI assistant.'
+    B $G2 'Microsoft.MicrosoftPCManager'        0 'Microsoft PC Manager'      'Optimizador de Microsoft (esta app ya hace lo mismo).'   ''                    'Microsoft optimizer (this app does the same).'
+    B $G2 'Microsoft.OutlookForWindows'         0 'Outlook (nuevo)'           'Cliente de correo. No afecta a Outlook de Office.'       'Outlook (new)'       'Mail client. Does not affect Office Outlook.'
+    B $G2 'microsoft.windowscommunicationsapps' 0 'Correo y Calendario'       'Apps antiguas de correo.'                                'Mail and Calendar'   'Legacy mail apps.'
+    B $G2 'Microsoft.YourPhone'                 0 'Enlace móvil'              'Conecta tu móvil con el PC.'                             'Phone Link'          'Connects your phone to your PC.'
+    B $G2 'Microsoft.ZuneMusic'                 0 'Reproductor multimedia'    'Reproductor de música y vídeo de Windows.'               'Media Player'        'Windows music and video player.'
+    B $G2 'Microsoft.WindowsSoundRecorder'      0 'Grabadora de sonido'       'Grabadora de audio.'                                     'Sound Recorder'      'Audio recorder.'
+    B $G2 'Microsoft.WindowsAlarms'             0 'Reloj / Alarmas'           'Alarmas, temporizador y sesiones de concentración.'      'Clock / Alarms'      'Alarms, timer and focus sessions.'
+    B $G2 'Microsoft.WindowsCamera'             0 'Cámara'                    'App de cámara.'                                          'Camera'              'Camera app.'
+    B $G2 'Microsoft.MicrosoftStickyNotes'      0 'Notas rápidas'             'Notas adhesivas.'                                        'Sticky Notes'        'Sticky notes.'
+    B $G2 'Microsoft.Office.OneNote'            0 'OneNote para Windows 10'   'Versión antigua de OneNote.'                             'OneNote for Windows 10' 'Legacy version of OneNote.'
+    B $G2 'Microsoft.MicrosoftJournal'          0 'Microsoft Journal'         'Notas a mano alzada.'                                    ''                    'Handwritten notes.'
+    B $G2 'MicrosoftCorporationII.QuickAssist'  0 'Asistencia rápida'         'Soporte remoto entre PCs.'                               'Quick Assist'        'Remote support between PCs.'
+    B $G2 'SpotifyAB.SpotifyMusic'              0 'Spotify'                   $IfEs '' $IfEn
+    B $G2 '*Netflix*'                           0 'Netflix'                   $IfEs '' $IfEn
+    B $G2 'Disney.*'                            0 'Disney+'                   $IfEs '' $IfEn
+    B $G2 'AmazonVideo.PrimeVideo'              0 'Prime Video'               $IfEs '' $IfEn
+    B $G2 '5319275A.WhatsAppDesktop'            0 'WhatsApp'                  $IfEs '' $IfEn
 
-    B $G3 'Microsoft.GamingApp'                 'Xbox'                          0 'App de Xbox / Game Pass. Déjala si juegas en PC.'
-    B $G3 'Microsoft.XboxApp'                   'Xbox (antigua)'                0 'Versión antigua de la app de Xbox.'
-    B $G3 'Microsoft.XboxGamingOverlay'         'Xbox Game Bar'                 0 'Barra Win+G (también graba la pantalla). Déjala si juegas.'
-    B $G3 'Microsoft.XboxGameOverlay'           'Xbox Game Overlay'             0 'Superposición de juegos.'
-    B $G3 'Microsoft.XboxSpeechToTextOverlay'   'Xbox voz a texto'              0 'Chat de voz en juegos.'
-    B $G3 'Microsoft.Edge.GameAssist'           'Edge Game Assist'              1 'Navegador superpuesto para juegos.'
+    B $G3 'Microsoft.GamingApp'                 0 'Xbox'                      'App de Xbox / Game Pass. Déjala si juegas en PC.'        ''                    'Xbox / Game Pass app. Keep it if you play on PC.'
+    B $G3 'Microsoft.XboxApp'                   0 'Xbox (antigua)'            'Versión antigua de la app de Xbox.'                      'Xbox (legacy)'       'Legacy version of the Xbox app.'
+    B $G3 'Microsoft.XboxGamingOverlay'         0 'Xbox Game Bar'             'Barra Win+G (también graba la pantalla). Déjala si juegas.' '' 'Win+G bar (also records the screen). Keep it if you play.'
+    B $G3 'Microsoft.XboxGameOverlay'           0 'Xbox Game Overlay'         'Superposición de juegos.'                                ''                    'Game overlay.'
+    B $G3 'Microsoft.XboxSpeechToTextOverlay'   0 'Xbox voz a texto'          'Chat de voz en juegos.'                                  'Xbox Speech to Text' 'In-game voice chat.'
+    B $G3 'Microsoft.Edge.GameAssist'           1 'Edge Game Assist'          'Navegador superpuesto para juegos.'                      ''                    'In-game browser overlay.'
 )
 
 function Get-UserAppx([string]$Name) {
@@ -577,7 +618,8 @@ function Get-BloatItems {
             $od = Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue
             if ($od -and $od.UninstallString) {
                 $out += [pscustomobject]@{ Kind = 'onedrive'; Group = $G2; Name = 'Microsoft OneDrive'; Id = 'OneDrive'; Default = $false
-                    Note = 'Deja de sincronizar. Tus archivos siguen en la nube y los ya descargados se quedan en el PC.'; Uninstall = $od.UninstallString }
+                    Note = (L 'Deja de sincronizar. Tus archivos siguen en la nube y los ya descargados se quedan en el PC.' 'Stops syncing. Your files stay in the cloud and downloaded ones stay on the PC.')
+                    Uninstall = $od.UninstallString }
                 break
             }
         }
@@ -598,7 +640,7 @@ function Remove-BloatItem($b, $provList) {
         if ($argStr -notmatch '/uninstall') { $argStr = ($argStr + ' /uninstall').Trim() }
         $p = Start-Process -FilePath $exe -ArgumentList $argStr -WindowStyle Hidden -PassThru
         Wait-Proc $p
-        if ($p.ExitCode -ne 0) { throw "El desinstalador devolvió el código $($p.ExitCode)." }
+        if ($p.ExitCode -ne 0) { throw (L "El desinstalador devolvió el código $($p.ExitCode)." "The uninstaller returned code $($p.ExitCode).") }
         return
     }
     foreach ($x in @(Get-UserAppx -Name $b.Id)) {
@@ -639,7 +681,8 @@ function Get-Backup {
     return $h
 }
 function Save-Backup($h) {
-    try { $h | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:BackupFile -Encoding UTF8 } catch { Write-Log "  Aviso: no se pudo guardar la copia de seguridad: $($_.Exception.Message)" }
+    try { $h | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:BackupFile -Encoding UTF8 }
+    catch { Write-Log (L "  Aviso: no se pudo guardar la copia de seguridad: $($_.Exception.Message)" "  Warning: could not save the backup: $($_.Exception.Message)") }
 }
 
 function Test-RegToggle($o) {
@@ -659,7 +702,7 @@ function Set-RegToggle($o) {
         Set-RegValue $rv $rv.Value
     }
     Save-Backup $bk
-    Write-Log '  Aplicado. Valores originales guardados para poder deshacerlo.'
+    Write-Log (L '  Aplicado. Valores originales guardados para poder deshacerlo.' '  Applied. Original values saved so it can be undone.')
 }
 function Undo-RegToggle($o) {
     $bk = Get-Backup; $n = 0
@@ -688,10 +731,10 @@ function Test-HasBackup($o) {
 function Get-DiskSummary {
     try {
         $t = @(Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
-            switch ("$($_.MediaType)") { 'SSD' { 'SSD' } 'HDD' { 'HDD' } default { 'virtual/otro' } }
+            switch ("$($_.MediaType)") { 'SSD' { 'SSD' } 'HDD' { 'HDD' } default { L 'virtual/otro' 'virtual/other' } }
         } | Select-Object -Unique)
         return ($t -join ', ')
-    } catch { return 'desconocido' }
+    } catch { return (L 'desconocido' 'unknown') }
 }
 
 function Get-HiberFile { $f = New-Object System.IO.FileInfo "$SD\hiberfil.sys"; try { if ($f.Exists) { return $f } } catch { }; return $null }
@@ -703,59 +746,60 @@ function New-Opt {
                        Status = $Status; Run = $Run; Values = $Values; Apply = $Apply; Undo = $Undo }
 }
 
-$OG1 = 'Mantenimiento (herramientas oficiales de Windows)'
-$OG2 = 'Ajustes reversibles'
+$OG1 = L 'Mantenimiento (herramientas oficiales de Windows)' 'Maintenance (official Windows tools)'
+$OG2 = L 'Ajustes reversibles' 'Reversible tweaks'
 
 $vmHint = ''
-if ($script:IsVM) { $vmHint = ' En una máquina virtual, después usa la opción de compactar / liberar espacio de tu software (Parallels, VMware, Hyper-V, VirtualBox) para que el anfitrión recupere el espacio.' }
+if ($script:IsVM) { $vmHint = L ' En una máquina virtual, después usa la opción de compactar / liberar espacio de tu software (Parallels, VMware, Hyper-V, VirtualBox) para que el anfitrión recupere el espacio.' ' In a virtual machine, then use the compact / reclaim disk space option of your software (Parallels, VMware, Hyper-V, VirtualBox) so the host gets the space back.' }
 
-$hiberNote = if ($script:IsLaptop) { 'En portátiles protege tu trabajo si se agota la batería: desactívala solo si no la usas.' }
-             else { 'Libera tanto espacio como indica el estado. También desactiva el Inicio rápido.' }
+$hiberNote = if ($script:IsLaptop) { L 'En portátiles protege tu trabajo si se agota la batería: desactívala solo si no la usas.' 'On laptops it protects your work if the battery runs out: disable it only if you do not use it.' }
+             else { L 'Libera tanto espacio como indica el estado. También desactiva el Inicio rápido.' 'Frees as much space as the status shows. Also disables Fast Startup.' }
 
 $Optimizations = @(
-    New-Opt -Id defrag -Group $OG1 -Name 'Optimizar unidades (TRIM / desfragmentar)' -Admin -Default $true `
-        -Note $(if ($script:IsVM) { 'Seguro. En máquinas virtuales ayuda a devolver espacio al anfitrión.' } else { 'Seguro. Windows elige TRIM (SSD) o desfragmentación (HDD).' }) `
-        -Desc ('Ejecuta la optimización oficial de Windows (defrag /C /O) en todas las unidades: TRIM en SSD y desfragmentación en discos mecánicos. No toca tus datos.' + $vmHint) `
-        -Status { 'Discos: ' + (Get-DiskSummary) } `
+    New-Opt -Id defrag -Group $OG1 -Name (L 'Optimizar unidades (TRIM / desfragmentar)' 'Optimize drives (TRIM / defragment)') -Admin -Default $true `
+        -Note $(if ($script:IsVM) { L 'Seguro. En máquinas virtuales ayuda a devolver espacio al anfitrión.' 'Safe. In virtual machines it helps give space back to the host.' } else { L 'Seguro. Windows elige TRIM (SSD) o desfragmentación (HDD).' 'Safe. Windows picks TRIM (SSD) or defragmentation (HDD).' }) `
+        -Desc ((L 'Ejecuta la optimización oficial de Windows (defrag /C /O) en todas las unidades: TRIM en SSD y desfragmentación en discos mecánicos. No toca tus datos.' 'Runs the official Windows optimization (defrag /C /O) on all drives: TRIM on SSDs and defragmentation on hard disks. Does not touch your data.') + $vmHint) `
+        -Status { (L 'Discos: ' 'Disks: ') + (Get-DiskSummary) } `
         -Run {
             $c = Invoke-Tool 'defrag.exe' @('/C', '/O', '/H')
-            if ($c -eq 0) { Write-Log '  Unidades optimizadas.' } else { Write-Log "  defrag terminó con código $c." }
-            if ($script:IsVM) { Write-Log '  Consejo: ahora compacta el disco virtual desde tu software de virtualización.' }
+            if ($c -eq 0) { Write-Log (L '  Unidades optimizadas.' '  Drives optimized.') } else { Write-Log (L "  defrag terminó con código $c." "  defrag exited with code $c.") }
+            if ($script:IsVM) { Write-Log (L '  Consejo: ahora compacta el disco virtual desde tu software de virtualización.' '  Tip: now compact the virtual disk from your virtualization software.') }
         }
 
-    New-Opt -Id dismrestore -Group $OG1 -Name 'Reparar imagen de Windows (DISM)' -Admin `
-        -Note 'Seguro. Requiere Internet. 10-30 minutos.' `
-        -Desc 'Ejecuta "DISM /Online /Cleanup-Image /RestoreHealth": comprueba y repara el almacén de componentes de Windows usando Windows Update. Conviene ejecutarlo antes de SFC.' `
+    New-Opt -Id dismrestore -Group $OG1 -Name (L 'Reparar imagen de Windows (DISM)' 'Repair Windows image (DISM)') -Admin `
+        -Note (L 'Seguro. Requiere Internet. 10-30 minutos.' 'Safe. Requires Internet. 10-30 minutes.') `
+        -Desc (L 'Ejecuta "DISM /Online /Cleanup-Image /RestoreHealth": comprueba y repara el almacén de componentes de Windows usando Windows Update. Conviene ejecutarlo antes de SFC.' 'Runs "DISM /Online /Cleanup-Image /RestoreHealth": checks and repairs the Windows component store using Windows Update. Best run before SFC.') `
         -Run {
             $c = Invoke-Tool 'dism.exe' @('/Online', '/Cleanup-Image', '/RestoreHealth')
-            if ($c -eq 0) { Write-Log '  Imagen de Windows correcta o reparada.' } else { Write-Log "  DISM terminó con código $c (detalles en $W\Logs\DISM\dism.log)." }
+            if ($c -eq 0) { Write-Log (L '  Imagen de Windows correcta o reparada.' '  Windows image is healthy or was repaired.') }
+            else { Write-Log (L "  DISM terminó con código $c (detalles en $W\Logs\DISM\dism.log)." "  DISM exited with code $c (details in $W\Logs\DISM\dism.log).") }
         }
 
-    New-Opt -Id sfc -Group $OG1 -Name 'Comprobar archivos del sistema (SFC)' -Admin `
-        -Note 'Seguro. Repara archivos de Windows dañados. 10-20 minutos.' `
-        -Desc 'Ejecuta "sfc /scannow": verifica todos los archivos protegidos de Windows y repara los que estén dañados.' `
+    New-Opt -Id sfc -Group $OG1 -Name (L 'Comprobar archivos del sistema (SFC)' 'Check system files (SFC)') -Admin `
+        -Note (L 'Seguro. Repara archivos de Windows dañados. 10-20 minutos.' 'Safe. Repairs damaged Windows files. 10-20 minutes.') `
+        -Desc (L 'Ejecuta "sfc /scannow": verifica todos los archivos protegidos de Windows y repara los que estén dañados.' 'Runs "sfc /scannow": verifies all protected Windows files and repairs damaged ones.') `
         -Run {
             $c = Invoke-Tool 'sfc.exe' @('/scannow')
-            Write-Log "  SFC terminado (código $c). Detalles en $W\Logs\CBS\CBS.log"
+            Write-Log (L "  SFC terminado (código $c). Detalles en $W\Logs\CBS\CBS.log" "  SFC finished (code $c). Details in $W\Logs\CBS\CBS.log")
         }
 
-    New-Opt -Id chkdsk -Group $OG1 -Name 'Comprobar el disco del sistema (CHKDSK)' -Admin `
-        -Note 'Seguro. Análisis en línea, no reinicia el equipo.' `
-        -Desc "Ejecuta `"chkdsk $SD /scan`": busca errores en el sistema de archivos sin desmontar la unidad." `
+    New-Opt -Id chkdsk -Group $OG1 -Name (L 'Comprobar el disco del sistema (CHKDSK)' 'Check the system disk (CHKDSK)') -Admin `
+        -Note (L 'Seguro. Análisis en línea, no reinicia el equipo.' 'Safe. Online scan, no restart needed.') `
+        -Desc (L "Ejecuta `"chkdsk $SD /scan`": busca errores en el sistema de archivos sin desmontar la unidad." "Runs `"chkdsk $SD /scan`": looks for file system errors without unmounting the drive.") `
         -Run {
             $c = Invoke-Tool 'chkdsk.exe' @($SD, '/scan')
             switch ($c) {
-                0       { Write-Log '  No se encontraron errores.' }
-                1       { Write-Log '  Se encontraron y corrigieron errores.' }
-                2       { Write-Log '  Sin errores; se hizo limpieza de mantenimiento.' }
-                default { Write-Log "  Hay errores que no se pudieron corregir en línea (código $c). Reinicia y ejecuta 'chkdsk $SD /f' desde una consola de administrador." }
+                0       { Write-Log (L '  No se encontraron errores.' '  No errors found.') }
+                1       { Write-Log (L '  Se encontraron y corrigieron errores.' '  Errors were found and fixed.') }
+                2       { Write-Log (L '  Sin errores; se hizo limpieza de mantenimiento.' '  No errors; maintenance cleanup was performed.') }
+                default { Write-Log (L "  Hay errores que no se pudieron corregir en línea (código $c). Reinicia y ejecuta 'chkdsk $SD /f' desde una consola de administrador." "  There are errors that could not be fixed online (code $c). Restart and run 'chkdsk $SD /f' from an administrator console.") }
             }
         }
 
-    New-Opt -Id visual -Group $OG2 -Name 'Efectos visuales en modo rendimiento' `
+    New-Opt -Id visual -Group $OG2 -Name (L 'Efectos visuales en modo rendimiento' 'Visual effects for best performance') `
         -Default ($script:IsVM -or ($script:RamGB -gt 0 -and $script:RamGB -lt 8)) `
-        -Note 'Reversible. Quita animaciones, sombras y transparencias. Se aplica del todo al cerrar sesión.' `
-        -Desc 'Desactiva animaciones de ventanas y barra de tareas, sombras, transparencias y Aero Peek. Mantiene el suavizado de fuentes. Útil en equipos modestos y máquinas virtuales.' `
+        -Note (L 'Reversible. Quita animaciones, sombras y transparencias. Se aplica del todo al cerrar sesión.' 'Reversible. Removes animations, shadows and transparency. Fully applied after signing out.') `
+        -Desc (L 'Desactiva animaciones de ventanas y barra de tareas, sombras, transparencias y Aero Peek. Mantiene el suavizado de fuentes. Útil en equipos modestos y máquinas virtuales.' 'Disables window and taskbar animations, shadows, transparency and Aero Peek. Keeps font smoothing. Useful on modest PCs and virtual machines.') `
         -Values @(
             RegVal 'HKCU' 'Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 3 'DWord'
             RegVal 'HKCU' 'Control Panel\Desktop' 'UserPreferencesMask' ([byte[]](0x90, 0x12, 0x03, 0x80, 0x10, 0x00, 0x00, 0x00)) 'Binary'
@@ -766,27 +810,27 @@ $Optimizations = @(
             RegVal 'HKCU' 'Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 0 'DWord'
         )
 
-    New-Opt -Id hibernate -Group $OG2 -Name 'Desactivar la hibernación' -Admin `
+    New-Opt -Id hibernate -Group $OG2 -Name (L 'Desactivar la hibernación' 'Disable hibernation') -Admin `
         -Default ([bool](Get-HiberFile) -and -not $script:IsLaptop) `
-        -Note ('Reversible. ' + $hiberNote) `
-        -Desc 'Ejecuta "powercfg /hibernate off" y elimina hiberfil.sys, que suele ocupar el 40 % de la RAM. Se puede volver a activar con "Deshacer ajustes".' `
-        -Status { $f = Get-HiberFile; if ($f) { 'Activa · ' + (Format-Size $f.Length) } else { 'Desactivada' } } `
+        -Note ((L 'Reversible. ' 'Reversible. ') + $hiberNote) `
+        -Desc (L 'Ejecuta "powercfg /hibernate off" y elimina hiberfil.sys, que suele ocupar el 40 % de la RAM. Se puede volver a activar con "Deshacer ajustes".' 'Runs "powercfg /hibernate off" and removes hiberfil.sys, which is usually 40% of your RAM. Can be re-enabled with "Undo tweaks".') `
+        -Status { $f = Get-HiberFile; if ($f) { (L 'Activa · ' 'On · ') + (Format-Size $f.Length) } else { L 'Desactivada' 'Off' } } `
         -Apply {
-            if (-not (Get-HiberFile)) { Write-Log '  La hibernación ya estaba desactivada.'; return }
+            if (-not (Get-HiberFile)) { Write-Log (L '  La hibernación ya estaba desactivada.' '  Hibernation was already disabled.'); return }
             $bk = Get-Backup; $bk['powercfg:hibernate'] = 'on'; Save-Backup $bk
             $c = Invoke-Tool 'powercfg.exe' @('/hibernate', 'off')
-            if ($c -eq 0) { Write-Log '  Hibernación desactivada.' } else { Write-Log "  powercfg terminó con código $c." }
+            if ($c -eq 0) { Write-Log (L '  Hibernación desactivada.' '  Hibernation disabled.') } else { Write-Log (L "  powercfg terminó con código $c." "  powercfg exited with code $c.") }
         } `
         -Undo {
             Invoke-Tool 'powercfg.exe' @('/hibernate', 'on') | Out-Null
             $bk = Get-Backup; $bk.Remove('powercfg:hibernate'); Save-Backup $bk
-            Write-Log '  Hibernación reactivada.'
+            Write-Log (L '  Hibernación reactivada.' '  Hibernation re-enabled.')
         }
 )
 
 function Get-OptStatus($o) {
     if ($o.Status) { return [string](& $o.Status) }
-    if ($o.Values) { if (Test-RegToggle $o) { return 'Aplicado' } else { return 'No aplicado' } }
+    if ($o.Values) { if (Test-RegToggle $o) { return (L 'Aplicado' 'Applied') } else { return (L 'No aplicado' 'Not applied') } }
     return ''
 }
 
@@ -840,8 +884,8 @@ function Get-DownloadsPath {
 
 # ------------------------------------------------------- Modo solo consola ----
 if ($Analizar) {
-    Write-Host "$AppName $AppVersion - análisis (no se borra nada)"
-    Write-Host "Equipo: $script:Machine · RAM: $script:RamGB GB · Discos: $(Get-DiskSummary) · Administrador: $script:IsAdmin`n"
+    Write-Host ("$AppName $AppVersion - " + (L 'análisis (no se borra nada)' 'analysis (nothing is deleted)'))
+    Write-Host ((L 'Equipo' 'Machine') + ": $script:Machine · RAM: $script:RamGB GB · " + (L 'Discos' 'Disks') + ": $(Get-DiskSummary) · " + (L 'Administrador' 'Administrator') + ': ' + $(if ($script:IsAdmin) { L 'Sí' 'Yes' } else { 'No' }) + "`n")
     $total = [long]0
     foreach ($c in $Categories) {
         $b = Measure-Cat $c
@@ -849,12 +893,12 @@ if ($Analizar) {
         '{0,-50} {1,12}' -f $c.Name, (Format-Size $b) | Write-Host
     }
     Write-Host ("`n{0,-50} {1,12}" -f 'TOTAL', (Format-Size $total))
-    Write-Host "`nBloatware detectado:"
+    Write-Host ("`n" + (L 'Bloatware detectado:' 'Bloatware found:'))
     foreach ($b in (Get-BloatItems)) {
         $mark = if ($b.Default) { '[x]' } else { '[ ]' }
         '  {0} {1,-32} {2}' -f $mark, $b.Name, $b.Id | Write-Host
     }
-    Write-Host "`nOptimizaciones:"
+    Write-Host ("`n" + (L 'Optimizaciones:' 'Optimizations:'))
     foreach ($o in $Optimizations) {
         $mark = if ($o.Default) { '[x]' } else { '[ ]' }
         '  {0} {1,-48} {2}' -f $mark, $o.Name, (Get-OptStatus $o) | Write-Host
@@ -986,6 +1030,9 @@ function New-Hint([string]$text) {
     return $l
 }
 
+# Textos reutilizados
+$TXT_ADMIN = L '[Requiere administrador] ' '[Requires administrator] '
+
 # ---------- Ventana
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "$AppName $AppVersion"
@@ -996,54 +1043,54 @@ $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
 $form.BackColor = $BgColor
 
 # ---------- Pestaña 1: Archivos basura
-$list = New-LV @(@('Elemento', 380), @('Tamaño', 110, 'Right'), @('Nota', 500)) $true
+$list = New-LV @(@((L 'Elemento' 'Item'), 380), @((L 'Tamaño' 'Size'), 110, 'Right'), @((L 'Nota' 'Note'), 500)) $true
 $cg = @{}
 foreach ($c in $Categories) {
     $allowed = (-not $c.Admin) -or $script:IsAdmin
-    $note = if ($allowed) { $c.Note } else { '[Requiere administrador] ' + $c.Note }
+    $note = if ($allowed) { $c.Note } else { $TXT_ADMIN + $c.Note }
     Add-LVItem $list $cg $c.Group $c.Name @('...', $note) $c $c.Default $allowed
 }
-$tabClean = New-Tab 'clean' 'Archivos basura'
+$tabClean = New-Tab 'clean' (L 'Archivos basura' 'Junk files')
 $tabClean.Controls.Add($list)
 
 # ---------- Pestaña 2: Bloatware
-$bloatList = New-LV @(@('Aplicación', 260), @('Paquete', 300), @('Nota', 450)) $true
+$bloatList = New-LV @(@((L 'Aplicación' 'App'), 260), @((L 'Paquete' 'Package'), 300), @((L 'Nota' 'Note'), 450)) $true
 $bloatOpts = New-OptionsBar
 $chkRestore = New-Object System.Windows.Forms.CheckBox
-$chkRestore.Text = 'Crear punto de restauración antes'
+$chkRestore.Text = L 'Crear punto de restauración antes' 'Create a restore point first'
 $chkRestore.AutoSize = $true
 $chkRestore.Checked = $script:IsAdmin
 $chkRestore.Enabled = $script:IsAdmin
 $chkProv = New-Object System.Windows.Forms.CheckBox
-$chkProv.Text = 'Evitar que Windows las reinstale'
+$chkProv.Text = L 'Evitar que Windows las reinstale' 'Prevent Windows from reinstalling them'
 $chkProv.AutoSize = $true
 $chkProv.Checked = $script:IsAdmin
 $chkProv.Enabled = $script:IsAdmin
 $chkProv.Margin = New-Object System.Windows.Forms.Padding((S 20), 0, 0, 0)
-$bloatOpts.Controls.AddRange(@($chkRestore, $chkProv, (New-Hint 'Todas se pueden volver a instalar desde Microsoft Store.')))
+$bloatOpts.Controls.AddRange(@($chkRestore, $chkProv, (New-Hint (L 'Todas se pueden volver a instalar desde Microsoft Store.' 'All of them can be reinstalled from the Microsoft Store.'))))
 $tabBloat = New-Tab 'bloat' 'Bloatware'
 $tabBloat.Controls.Add($bloatList)
 $tabBloat.Controls.Add($bloatOpts)
 
 # ---------- Pestaña 3: Optimizar
-$optList = New-LV @(@('Acción / ajuste', 360), @('Estado', 170), @('Nota', 480)) $true
+$optList = New-LV @(@((L 'Acción / ajuste' 'Action / tweak'), 360), @((L 'Estado' 'Status'), 170), @((L 'Nota' 'Note'), 480)) $true
 $og = @{}
 foreach ($o in $Optimizations) {
     $allowed = (-not $o.Admin) -or $script:IsAdmin
-    $note = if ($allowed) { $o.Note } else { '[Requiere administrador] ' + $o.Note }
+    $note = if ($allowed) { $o.Note } else { $TXT_ADMIN + $o.Note }
     Add-LVItem $optList $og $o.Group $o.Name @('...', $note) $o $o.Default $allowed
 }
 $optBar = New-OptionsBar
-$optBar.Controls.Add((New-Hint "Equipo detectado: $script:Machine · RAM $script:RamGB GB · Discos: $(Get-DiskSummary). Las recomendaciones se adaptan a tu equipo."))
-$tabOpt = New-Tab 'opt' 'Optimizar'
+$optBar.Controls.Add((New-Hint ((L 'Equipo detectado' 'Detected machine') + ": $script:Machine · RAM $script:RamGB GB · " + (L 'Discos' 'Disks') + ": $(Get-DiskSummary). " + (L 'Las recomendaciones se adaptan a tu equipo.' 'Recommendations adapt to your machine.'))))
+$tabOpt = New-Tab 'opt' (L 'Optimizar' 'Optimize')
 $tabOpt.Controls.Add($optList)
 $tabOpt.Controls.Add($optBar)
 
 # ---------- Pestaña 4: Espacio
-$lvFolders = New-LV @(@('Tamaño', 95, 'Right'), @('%', 60, 'Right'), @('Carpeta', 260)) $false
+$lvFolders = New-LV @(@((L 'Tamaño' 'Size'), 95, 'Right'), @('%', 60, 'Right'), @((L 'Carpeta' 'Folder'), 260)) $false
 $lvFolders.ShowGroups = $false
 $lvFolders.MultiSelect = $false
-$lvFiles = New-LV @(@('Archivo', 260), @('Tamaño', 100, 'Right'), @('Modificado', 100), @('Ubicación', 300)) $false
+$lvFiles = New-LV @(@((L 'Archivo' 'File'), 260), @((L 'Tamaño' 'Size'), 100, 'Right'), @((L 'Modificado' 'Modified'), 100), @((L 'Ubicación' 'Location'), 300)) $false
 $lvFiles.ShowGroups = $false
 $lvFiles.MultiSelect = $true
 
@@ -1054,23 +1101,23 @@ $split.Panel1.Controls.Add($lvFolders)
 $split.Panel2.Controls.Add($lvFiles)
 
 $lblFoldersTitle = New-Object System.Windows.Forms.Label
-$lblFoldersTitle.Text = '  Carpetas (doble clic para entrar)'
+$lblFoldersTitle.Text = '  ' + (L 'Carpetas (doble clic para entrar)' 'Folders (double-click to open)')
 $lblFoldersTitle.Dock = 'Top'; $lblFoldersTitle.Height = S 24; $lblFoldersTitle.TextAlign = 'MiddleLeft'
 $lblFoldersTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
 $split.Panel1.Controls.Add($lblFoldersTitle)
 $lblFilesTitle = New-Object System.Windows.Forms.Label
-$lblFilesTitle.Text = "  Archivos más grandes (más de $(Format-Size $script:BigMin))"
+$lblFilesTitle.Text = '  ' + (L "Archivos más grandes (más de $(Format-Size $script:BigMin))" "Largest files (over $(Format-Size $script:BigMin))")
 $lblFilesTitle.Dock = 'Top'; $lblFilesTitle.Height = S 24; $lblFilesTitle.TextAlign = 'MiddleLeft'
 $lblFilesTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9.5)
 $split.Panel2.Controls.Add($lblFilesTitle)
 
 $spaceBar = New-OptionsBar
 $spaceBar.Height = S 52
-$btnSpProfile   = New-Btn 'Mi perfil' $false
-$btnSpDownloads = New-Btn 'Descargas' $false
-$btnSpDrive     = New-Btn "Unidad $SD\" $false
-$btnSpPick      = New-Btn 'Otra carpeta...' $false
-$btnSpUp        = New-Btn 'Subir un nivel' $false
+$btnSpProfile   = New-Btn (L 'Mi perfil' 'My profile') $false
+$btnSpDownloads = New-Btn (L 'Descargas' 'Downloads') $false
+$btnSpDrive     = New-Btn ((L 'Unidad ' 'Drive ') + "$SD\") $false
+$btnSpPick      = New-Btn (L 'Otra carpeta...' 'Other folder...') $false
+$btnSpUp        = New-Btn (L 'Subir un nivel' 'Up one level') $false
 $spaceBar.Controls.AddRange(@($btnSpProfile, $btnSpDownloads, $btnSpDrive, $btnSpPick, $btnSpUp))
 $lblSpPath = New-Object System.Windows.Forms.Label
 $lblSpPath.Dock = 'Top'
@@ -1078,9 +1125,9 @@ $lblSpPath.Height = S 26
 $lblSpPath.Padding = New-Object System.Windows.Forms.Padding((S 10), 0, 0, 0)
 $lblSpPath.TextAlign = 'MiddleLeft'
 $lblSpPath.BackColor = $White
-$lblSpPath.Text = 'Elige una carpeta para analizar.'
+$lblSpPath.Text = L 'Elige una carpeta para analizar.' 'Choose a folder to scan.'
 
-$tabSpace = New-Tab 'space' 'Espacio'
+$tabSpace = New-Tab 'space' (L 'Espacio' 'Disk space')
 $tabSpace.Controls.Add($split)
 $tabSpace.Controls.Add($lblSpPath)
 $tabSpace.Controls.Add($spaceBar)
@@ -1100,10 +1147,10 @@ $lblDesc.BackColor = $White
 $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
 
 $DescDefault = @{
-    clean = 'Selecciona un elemento para ver qué se borra exactamente.'
-    bloat = 'Selecciona una app para ver qué es. Solo se muestran apps de una lista segura: nunca componentes del sistema.'
-    opt   = 'Selecciona una acción para ver qué hace. Los ajustes guardan su valor original y se pueden deshacer.'
-    space = 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows y de programas están protegidas.'
+    clean = L 'Selecciona un elemento para ver qué se borra exactamente.' 'Select an item to see exactly what gets deleted.'
+    bloat = L 'Selecciona una app para ver qué es. Solo se muestran apps de una lista segura: nunca componentes del sistema.' 'Select an app to see what it is. Only apps from a safe list are shown: never system components.'
+    opt   = L 'Selecciona una acción para ver qué hace. Los ajustes guardan su valor original y se pueden deshacer.' 'Select an action to see what it does. Tweaks save their original value and can be undone.'
+    space = L 'Solo muestra información. Si envías algo a la papelera, puedes recuperarlo desde ella. Las carpetas de Windows y de programas están protegidas.' 'Information only. Anything you send to the Recycle Bin can be restored from it. Windows and program folders are protected.'
 }
 $lblDesc.Text = $DescDefault.clean
 
@@ -1133,7 +1180,7 @@ $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Dock = 'Fill'
 $lblStatus.TextAlign = 'MiddleLeft'
 $lblStatus.AutoEllipsis = $true
-$lblStatus.Text = 'Listo.'
+$lblStatus.Text = L 'Listo.' 'Ready.'
 $progress = New-Object System.Windows.Forms.ProgressBar
 $progress.Dock = 'Bottom'
 $progress.Height = S 6
@@ -1146,17 +1193,19 @@ $flow.AutoSize = $true
 $flow.AutoSizeMode = 'GrowAndShrink'
 $flow.WrapContents = $false
 
+$TXT_RECOM = L 'Recomendados' 'Recommended'
+$TXT_NONE  = L 'Ninguno' 'None'
 $TabButtons = [ordered]@{
-    clean = @((New-Btn 'Volver a analizar' $false), (New-Btn 'Recomendados' $false), (New-Btn 'Ninguno' $false), (New-Btn 'Limpiar seleccionados' $true))
-    bloat = @((New-Btn 'Volver a buscar' $false), (New-Btn 'Recomendados' $false), (New-Btn 'Ninguno' $false), (New-Btn 'Desinstalar seleccionadas' $true $Danger))
-    opt   = @((New-Btn 'Deshacer ajustes' $false), (New-Btn 'Recomendados' $false), (New-Btn 'Ninguno' $false), (New-Btn 'Aplicar seleccionadas' $true))
-    space = @((New-Btn 'Volver a analizar' $false), (New-Btn 'Abrir ubicación' $false), (New-Btn 'Enviar a la papelera' $true $Danger))
+    clean = @((New-Btn (L 'Volver a analizar' 'Scan again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Limpiar seleccionados' 'Clean selected') $true))
+    bloat = @((New-Btn (L 'Volver a buscar' 'Search again') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Desinstalar seleccionadas' 'Uninstall selected') $true $Danger))
+    opt   = @((New-Btn (L 'Deshacer ajustes' 'Undo tweaks') $false), (New-Btn $TXT_RECOM $false), (New-Btn $TXT_NONE $false), (New-Btn (L 'Aplicar seleccionadas' 'Apply selected') $true))
+    space = @((New-Btn (L 'Volver a analizar' 'Scan again') $false), (New-Btn (L 'Abrir ubicación' 'Open location') $false), (New-Btn (L 'Enviar a la papelera' 'Send to Recycle Bin') $true $Danger))
 }
 $btnAnalyze, $btnRecom, $btnNone, $btnClean                       = $TabButtons.clean
 $btnBloatReload, $btnBloatRecom, $btnBloatNone, $btnBloatRemove   = $TabButtons.bloat
 $btnOptUndo, $btnOptRecom, $btnOptNone, $btnOptRun                = $TabButtons.opt
 $btnSpRescan, $btnSpOpen, $btnSpTrash                             = $TabButtons.space
-$btnCancel = New-Btn 'Cancelar' $false
+$btnCancel = New-Btn (L 'Cancelar' 'Cancel') $false
 $btnCancel.Visible = $false
 
 $script:AllButtons = @()
@@ -1182,8 +1231,29 @@ $lblInfo = New-Object System.Windows.Forms.Label
 $lblInfo.ForeColor = [System.Drawing.Color]::FromArgb(220, 235, 255)
 $lblInfo.Dock = 'Bottom'
 $lblInfo.AutoSize = $true
+
+# Selector de idioma / Language selector
+$langPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$langPanel.Dock = 'Right'
+$langPanel.AutoSize = $true
+$langPanel.AutoSizeMode = 'GrowAndShrink'
+$langPanel.WrapContents = $false
+$langPanel.Padding = New-Object System.Windows.Forms.Padding(0, (S 6), 0, 0)
+$lblLang = New-Object System.Windows.Forms.Label
+$lblLang.Text = L 'Idioma:' 'Language:'
+$lblLang.ForeColor = $White
+$lblLang.AutoSize = $true
+$lblLang.Margin = New-Object System.Windows.Forms.Padding(0, (S 4), (S 6), 0)
+$cmbLang = New-Object System.Windows.Forms.ComboBox
+$cmbLang.DropDownStyle = 'DropDownList'
+$cmbLang.Width = S 170
+[void]$cmbLang.Items.AddRange(@((L 'Automático (Windows)' 'Automatic (Windows)'), 'Español', 'English'))
+$cmbLang.SelectedIndex = switch ($script:LangPref) { 'es' { 1 } 'en' { 2 } default { 0 } }
+$langPanel.Controls.AddRange(@($lblLang, $cmbLang))
+
 $header.Controls.Add($lblInfo)
 $header.Controls.Add($lblTitle)
+$header.Controls.Add($langPanel)
 
 # Orden de acoplamiento: el control "Fill" se añade primero
 $form.Controls.Add($tabs)
@@ -1195,9 +1265,9 @@ $form.Controls.Add($header)
 # ================================================================ Lógica =====
 function Update-Info {
     $d = New-Object System.IO.DriveInfo $env:SystemDrive
-    $adm = if ($script:IsAdmin) { 'Sí' } else { 'No (algunas opciones desactivadas)' }
-    $txt = "Espacio libre en ${env:SystemDrive} $(Format-Size $d.AvailableFreeSpace) de $(Format-Size $d.TotalSize)    ·    $script:Machine, $script:RamGB GB RAM    ·    Administrador: $adm"
-    if ($script:OtherUser) { $txt += "    ·    Perfil: $script:TargetName" }
+    $adm = if ($script:IsAdmin) { L 'Sí' 'Yes' } else { L 'No (algunas opciones desactivadas)' 'No (some options disabled)' }
+    $txt = (L 'Espacio libre en ' 'Free space on ') + "${env:SystemDrive} $(Format-Size $d.AvailableFreeSpace) " + (L 'de' 'of') + " $(Format-Size $d.TotalSize)    ·    $script:Machine, $script:RamGB GB RAM    ·    " + (L 'Administrador' 'Administrator') + ": $adm"
+    if ($script:OtherUser) { $txt += "    ·    " + (L 'Perfil' 'Profile') + ": $script:TargetName" }
     $lblInfo.Text = $txt
 }
 
@@ -1209,15 +1279,15 @@ function Update-Selection {
         'clean' {
             $sum = [long]0; $n = 0
             foreach ($it in @($list.Items | Where-Object { $_.Checked })) { $n++; if ($it.Tag.Bytes -gt 0) { $sum += $it.Tag.Bytes } }
-            $lblStatus.Text = "Seleccionado: $n elementos · aprox. $(Format-Size $sum) a liberar"
+            $lblStatus.Text = L "Seleccionado: $n elementos · aprox. $(Format-Size $sum) a liberar" "Selected: $n items · approx. $(Format-Size $sum) to free"
         }
         'bloat' {
             $n = @($bloatList.Items | Where-Object { $_.Checked }).Count
-            $lblStatus.Text = "Seleccionadas: $n de $($bloatList.Items.Count) apps"
+            $lblStatus.Text = L "Seleccionadas: $n de $($bloatList.Items.Count) apps" "Selected: $n of $($bloatList.Items.Count) apps"
         }
         'opt' {
             $n = @($optList.Items | Where-Object { $_.Checked }).Count
-            $lblStatus.Text = "Seleccionadas: $n acciones"
+            $lblStatus.Text = L "Seleccionadas: $n acciones" "Selected: $n actions"
         }
         'space' {
             $lblStatus.Text = $script:SpaceSummary
@@ -1235,6 +1305,7 @@ function Set-Busy([bool]$on) {
     foreach ($b in $script:AllButtons) { $b.Enabled = -not $on }
     $bloatOpts.Enabled = -not $on
     $spaceBar.Enabled = -not $on
+    $cmbLang.Enabled = -not $on
     $form.Cursor = if ($on) { [System.Windows.Forms.Cursors]::WaitCursor } else { [System.Windows.Forms.Cursors]::Default }
     if (-not $on) { $progress.Value = 0 }
 }
@@ -1244,28 +1315,41 @@ function Confirm-Action([string]$msg, [string]$title, [string]$icon = 'Question'
 }
 function Show-Info([string]$msg) { [void][System.Windows.Forms.MessageBox]::Show($msg, $AppName, 'OK', 'Information') }
 
+# ---------- Idioma
+function Set-Language {
+    $new = switch ($cmbLang.SelectedIndex) { 1 { 'es' } 2 { 'en' } default { 'auto' } }
+    if ($new -eq $script:LangPref) { return }
+    Save-Config $new
+    $script:LangPref = $new
+    $q = L "Se ha guardado el idioma. ¿Reiniciar la aplicación ahora para aplicarlo?`n`nThe language has been saved. Restart the app now to apply it?" "The language has been saved. Restart the app now to apply it?`n`nSe ha guardado el idioma. ¿Reiniciar la aplicación ahora para aplicarlo?"
+    if (Confirm-Action $q $AppName) {
+        Start-Process -FilePath 'powershell.exe' -ArgumentList (Get-LaunchArgs -NoLang)
+        $form.Close()
+    }
+}
+
 # ---------- 1. Archivos basura
 function Set-ItemSize($it) {
     $b = $it.Tag.Bytes
-    $it.SubItems[1].Text = if ($b -eq 0) { 'Vacío' } else { Format-Size $b }
+    $it.SubItems[1].Text = if ($b -eq 0) { L 'Vacío' 'Empty' } else { Format-Size $b }
 }
 
 function Invoke-Analyze {
     Set-Busy $true
-    Write-Log 'Analizando archivos basura...'
+    Write-Log (L 'Analizando archivos basura...' 'Scanning junk files...')
     $n = $list.Items.Count; $i = 0
     foreach ($it in $list.Items) {
         $i++
-        $lblStatus.Text = "Analizando: $($it.Tag.Name)..."
+        $lblStatus.Text = (L 'Analizando: ' 'Scanning: ') + "$($it.Tag.Name)..."
         $progress.Value = [int](100 * ($i - 1) / $n)
-        $it.SubItems[1].Text = 'Analizando...'
+        $it.SubItems[1].Text = L 'Analizando...' 'Scanning...'
         [System.Windows.Forms.Application]::DoEvents()
         try { $it.Tag.Bytes = Measure-Cat $it.Tag } catch { $it.Tag.Bytes = -1 }
         Set-ItemSize $it
     }
     $total = [long]0
     foreach ($it in $list.Items) { if ($it.Tag.Bytes -gt 0) { $total += $it.Tag.Bytes } }
-    Write-Log "Análisis terminado. Total recuperable estimado: $(Format-Size $total)"
+    Write-Log (L "Análisis terminado. Total recuperable estimado: $(Format-Size $total)" "Scan finished. Estimated recoverable total: $(Format-Size $total)")
     Set-Busy $false
     Update-Info
     Update-Selection
@@ -1273,31 +1357,32 @@ function Invoke-Analyze {
 
 function Invoke-Clean {
     $sel = @($list.Items | Where-Object { $_.Checked })
-    if ($sel.Count -eq 0) { Show-Info 'No hay nada seleccionado.'; return }
+    if ($sel.Count -eq 0) { Show-Info (L 'No hay nada seleccionado.' 'Nothing is selected.'); return }
     $est = [long]0
     foreach ($it in $sel) { if ($it.Tag.Bytes -gt 0) { $est += $it.Tag.Bytes } }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n"
-    if (-not (Confirm-Action "Se van a limpiar $($sel.Count) elementos (aprox. $(Format-Size $est)):`n`n$names`n`nLos archivos en uso se omitirán. ¿Continuar?" 'Confirmar limpieza')) { return }
+    $msg = L "Se van a limpiar $($sel.Count) elementos (aprox. $(Format-Size $est)):`n`n$names`n`nLos archivos en uso se omitirán. ¿Continuar?" "$($sel.Count) items will be cleaned (approx. $(Format-Size $est)):`n`n$names`n`nFiles in use will be skipped. Continue?"
+    if (-not (Confirm-Action $msg (L 'Confirmar limpieza' 'Confirm cleanup'))) { return }
 
     Set-Busy $true
     $freeBefore = Get-FreeSpace
     $grand = [long]0
     $i = 0
-    Write-Log '===== Inicio de la limpieza ====='
+    Write-Log (L '===== Inicio de la limpieza =====' '===== Cleanup started =====')
     foreach ($it in $sel) {
         $i++
         $cat = $it.Tag
         $progress.Value = [int](100 * ($i - 1) / $sel.Count)
-        $lblStatus.Text = "Limpiando: $($cat.Name)..."
-        $it.SubItems[1].Text = 'Limpiando...'
+        $lblStatus.Text = (L 'Limpiando: ' 'Cleaning: ') + "$($cat.Name)..."
+        $it.SubItems[1].Text = L 'Limpiando...' 'Cleaning...'
         [System.Windows.Forms.Application]::DoEvents()
-        Write-Log "Limpiando: $($cat.Name)"
+        Write-Log ((L 'Limpiando: ' 'Cleaning: ') + $cat.Name)
 
-        if ($cat.Bytes -eq 0) { Write-Log '  Nada que limpiar.'; Set-ItemSize $it; continue }
+        if ($cat.Bytes -eq 0) { Write-Log (L '  Nada que limpiar.' '  Nothing to clean.'); Set-ItemSize $it; continue }
 
         if ($cat.Procs.Count -gt 0) {
             $running = @(Get-Process -Name $cat.Procs -ErrorAction SilentlyContinue)
-            if ($running.Count -gt 0) { Write-Log "  Aviso: $($cat.Name) está abierto; ciérralo para limpiar por completo." }
+            if ($running.Count -gt 0) { Write-Log (L "  Aviso: $($cat.Name) está abierto; ciérralo para limpiar por completo." "  Warning: $($cat.Name) is open; close it to clean everything.") }
         }
 
         $res = @{ Freed = [long]0; Files = 0; Failed = 0 }
@@ -1312,30 +1397,30 @@ function Invoke-Clean {
                 foreach ($t in (Get-Targets $cat)) { Clear-Target $t $res }
             }
         } catch {
-            Write-Log "  Error: $($_.Exception.Message)"
+            Write-Log ("  Error: " + $_.Exception.Message)
         }
         $grand += $res.Freed
-        $extra = if ($res.Failed -gt 0) { " ($($res.Failed) archivos en uso omitidos)" } else { '' }
-        Write-Log "  Liberado: $(Format-Size $res.Freed)$extra"
+        $extra = if ($res.Failed -gt 0) { L " ($($res.Failed) archivos en uso omitidos)" " ($($res.Failed) files in use skipped)" } else { '' }
+        Write-Log ((L '  Liberado: ' '  Freed: ') + (Format-Size $res.Freed) + $extra)
 
         try { $cat.Bytes = Measure-Cat $cat } catch { }
         Set-ItemSize $it
         $script:Internal = $true; $it.Checked = $false; $script:Internal = $false
     }
     $freeAfter = Get-FreeSpace
-    Write-Log "===== Fin. Total liberado: $(Format-Size $grand) ====="
+    Write-Log (L "===== Fin. Total liberado: $(Format-Size $grand) =====" "===== Done. Total freed: $(Format-Size $grand) =====")
     Set-Busy $false
     Update-Info
     Update-Selection
-    $msg = "Limpieza completada.`n`nEspacio liberado: $(Format-Size $grand)`nEspacio libre en ${env:SystemDrive} $(Format-Size $freeBefore)  →  $(Format-Size $freeAfter)"
-    if ($script:IsVM) { $msg += "`n`nEs una máquina virtual: ejecuta 'Optimizar unidades' en la pestaña Optimizar y compacta el disco virtual para que el anfitrión recupere el espacio." }
+    $msg = L "Limpieza completada.`n`nEspacio liberado: $(Format-Size $grand)`nEspacio libre en ${env:SystemDrive} $(Format-Size $freeBefore)  →  $(Format-Size $freeAfter)" "Cleanup completed.`n`nSpace freed: $(Format-Size $grand)`nFree space on ${env:SystemDrive} $(Format-Size $freeBefore)  →  $(Format-Size $freeAfter)"
+    if ($script:IsVM) { $msg += L "`n`nEs una máquina virtual: ejecuta 'Optimizar unidades' en la pestaña Optimizar y compacta el disco virtual para que el anfitrión recupere el espacio." "`n`nThis is a virtual machine: run 'Optimize drives' in the Optimize tab and compact the virtual disk so the host gets the space back." }
     Show-Info $msg
 }
 
 # ---------- 2. Bloatware
 function Update-BloatList {
     Set-Busy $true
-    $lblStatus.Text = 'Buscando bloatware instalado...'
+    $lblStatus.Text = L 'Buscando bloatware instalado...' 'Looking for installed bloatware...'
     [System.Windows.Forms.Application]::DoEvents()
     $bloatList.BeginUpdate()
     $bloatList.Items.Clear()
@@ -1349,41 +1434,44 @@ function Update-BloatList {
     foreach ($b in $items) { Add-LVItem $bloatList $bg $b.Group $b.Name @($b.Id, $b.Note) $b $b.Default $true }
     $bloatList.EndUpdate()
     $script:BloatLoaded = $true
-    Write-Log "Bloatware: $($items.Count) apps prescindibles encontradas."
+    Write-Log (L "Bloatware: $($items.Count) apps prescindibles encontradas." "Bloatware: $($items.Count) unnecessary apps found.")
     Set-Busy $false
     Update-Selection
 }
 
 function Invoke-BloatRemove {
     $sel = @($bloatList.Items | Where-Object { $_.Checked })
-    if ($sel.Count -eq 0) { Show-Info 'No hay ninguna app seleccionada.'; return }
+    if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna app seleccionada.' 'No app is selected.'); return }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n"
-    if (-not (Confirm-Action "Se van a desinstalar $($sel.Count) apps:`n`n$names`n`nSe pueden volver a instalar desde Microsoft Store. ¿Continuar?" 'Confirmar desinstalación' 'Warning')) { return }
+    $msg = L "Se van a desinstalar $($sel.Count) apps:`n`n$names`n`nSe pueden volver a instalar desde Microsoft Store. ¿Continuar?" "$($sel.Count) apps will be uninstalled:`n`n$names`n`nThey can be reinstalled from the Microsoft Store. Continue?"
+    if (-not (Confirm-Action $msg (L 'Confirmar desinstalación' 'Confirm uninstall') 'Warning')) { return }
 
     Set-Busy $true
-    Write-Log '===== Desinstalación de bloatware ====='
+    Write-Log (L '===== Desinstalación de bloatware =====' '===== Bloatware removal =====')
 
     if ($chkRestore.Checked -and $script:IsAdmin) {
-        $lblStatus.Text = 'Creando punto de restauración (puede tardar un minuto)...'
-        Write-Log 'Creando punto de restauración...'
-        $cmd = "try { Checkpoint-Computer -Description 'Limpiador de Windows: antes de quitar bloatware' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; exit 0 } catch { exit 1 }"
+        $lblStatus.Text = L 'Creando punto de restauración (puede tardar un minuto)...' 'Creating a restore point (may take a minute)...'
+        Write-Log (L 'Creando punto de restauración...' 'Creating restore point...')
+        $desc = L 'Limpiador de Windows: antes de quitar bloatware' 'Windows Cleaner: before removing bloatware'
+        $cmd = "try { Checkpoint-Computer -Description '$desc' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; exit 0 } catch { exit 1 }"
         $p = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-Command', $cmd -WindowStyle Hidden -PassThru
         Wait-Proc $p
         if ($p.ExitCode -eq 0) {
-            Write-Log '  Punto de restauración creado (o ya existía uno de las últimas 24 h).'
+            Write-Log (L '  Punto de restauración creado (o ya existía uno de las últimas 24 h).' '  Restore point created (or one from the last 24 h already existed).')
         } else {
-            Write-Log '  No se pudo crear el punto de restauración (¿Protección del sistema desactivada?).'
-            if (-not (Confirm-Action "No se pudo crear el punto de restauración.`nProbablemente la Protección del sistema está desactivada.`n`n¿Continuar de todas formas?" 'Punto de restauración' 'Warning')) {
-                Write-Log 'Cancelado.'; Set-Busy $false; Update-Selection; return
+            Write-Log (L '  No se pudo crear el punto de restauración (¿Protección del sistema desactivada?).' '  Could not create the restore point (is System Protection disabled?).')
+            $q = L "No se pudo crear el punto de restauración.`nProbablemente la Protección del sistema está desactivada.`n`n¿Continuar de todas formas?" "Could not create the restore point.`nSystem Protection is probably disabled.`n`nContinue anyway?"
+            if (-not (Confirm-Action $q (L 'Punto de restauración' 'Restore point') 'Warning')) {
+                Write-Log (L 'Cancelado.' 'Cancelled.'); Set-Busy $false; Update-Selection; return
             }
         }
     }
 
     $provList = @()
     if ($chkProv.Checked -and $script:IsAdmin) {
-        $lblStatus.Text = 'Leyendo apps preinstaladas de Windows...'
+        $lblStatus.Text = L 'Leyendo apps preinstaladas de Windows...' 'Reading Windows preinstalled apps...'
         [System.Windows.Forms.Application]::DoEvents()
-        try { $provList = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop) } catch { Write-Log "  Aviso: $($_.Exception.Message)" }
+        try { $provList = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop) } catch { Write-Log ((L '  Aviso: ' '  Warning: ') + $_.Exception.Message) }
     }
 
     $ok = 0; $fail = 0; $i = 0
@@ -1391,26 +1479,26 @@ function Invoke-BloatRemove {
         $i++
         $b = $it.Tag
         $progress.Value = [int](100 * ($i - 1) / $sel.Count)
-        $lblStatus.Text = "Desinstalando: $($b.Name)..."
+        $lblStatus.Text = (L 'Desinstalando: ' 'Uninstalling: ') + "$($b.Name)..."
         [System.Windows.Forms.Application]::DoEvents()
-        Write-Log "Desinstalando: $($b.Name) ($($b.Id))"
+        Write-Log ((L 'Desinstalando: ' 'Uninstalling: ') + "$($b.Name) ($($b.Id))")
         try {
             Remove-BloatItem $b $provList
             Write-Log '  OK'
             $bloatList.Items.Remove($it)
             $ok++
         } catch {
-            Write-Log "  Error: $($_.Exception.Message)"
+            Write-Log ("  Error: " + $_.Exception.Message)
             $it.ForeColor = [System.Drawing.Color]::Firebrick
             $fail++
         }
     }
-    Write-Log "===== Fin. Desinstaladas: $ok · Con error: $fail ====="
+    Write-Log (L "===== Fin. Desinstaladas: $ok · Con error: $fail =====" "===== Done. Uninstalled: $ok · Failed: $fail =====")
     Set-Busy $false
     Update-Info
     Update-Selection
-    $extra = if ($fail -gt 0) { "`nCon error: $fail (detalles en el registro inferior)" } else { '' }
-    Show-Info "Desinstalación completada.`n`nDesinstaladas: $ok$extra"
+    $extra = if ($fail -gt 0) { L "`nCon error: $fail (detalles en el registro inferior)" "`nFailed: $fail (details in the log below)" } else { '' }
+    Show-Info ((L "Desinstalación completada.`n`nDesinstaladas: $ok" "Uninstall completed.`n`nUninstalled: $ok") + $extra)
 }
 
 # ---------- 3. Optimizar
@@ -1422,67 +1510,68 @@ function Update-OptList {
 
 function Invoke-OptRun {
     $sel = @($optList.Items | Where-Object { $_.Checked })
-    if ($sel.Count -eq 0) { Show-Info 'No hay ninguna acción seleccionada.'; return }
+    if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna acción seleccionada.' 'No action is selected.'); return }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n"
-    if (-not (Confirm-Action "Se va a ejecutar:`n`n$names`n`nAlgunas tareas pueden tardar varios minutos. No cierres la ventana mientras tanto. ¿Continuar?" 'Confirmar optimización')) { return }
+    $msg = L "Se va a ejecutar:`n`n$names`n`nAlgunas tareas pueden tardar varios minutos. No cierres la ventana mientras tanto. ¿Continuar?" "The following will run:`n`n$names`n`nSome tasks may take several minutes. Do not close the window meanwhile. Continue?"
+    if (-not (Confirm-Action $msg (L 'Confirmar optimización' 'Confirm optimization'))) { return }
 
     Set-Busy $true
-    Write-Log '===== Optimización ====='
+    Write-Log (L '===== Optimización =====' '===== Optimization =====')
     $i = 0
     foreach ($it in $sel) {
         $i++
         $o = $it.Tag
         $progress.Value = [int](100 * ($i - 1) / $sel.Count)
-        $lblStatus.Text = "Ejecutando: $($o.Name)... (puede tardar)"
-        $it.SubItems[1].Text = 'En curso...'
+        $lblStatus.Text = L "Ejecutando: $($o.Name)... (puede tardar)" "Running: $($o.Name)... (may take a while)"
+        $it.SubItems[1].Text = L 'En curso...' 'Running...'
         [System.Windows.Forms.Application]::DoEvents()
-        Write-Log "Ejecutando: $($o.Name)"
+        Write-Log ((L 'Ejecutando: ' 'Running: ') + $o.Name)
         try {
             if ($o.Run) { & $o.Run }
             elseif ($o.Apply) { & $o.Apply }
             elseif ($o.Values) { Set-RegToggle $o }
         } catch {
-            Write-Log "  Error: $($_.Exception.Message)"
+            Write-Log ("  Error: " + $_.Exception.Message)
         }
         $script:Internal = $true; $it.Checked = $false; $script:Internal = $false
         try { $it.SubItems[1].Text = Get-OptStatus $o } catch { }
     }
-    Write-Log '===== Fin de la optimización ====='
+    Write-Log (L '===== Fin de la optimización =====' '===== Optimization finished =====')
     Set-Busy $false
     Update-Info
     Update-Selection
-    Show-Info 'Optimización terminada. Revisa el registro inferior para ver los resultados.'
+    Show-Info (L 'Optimización terminada. Revisa el registro inferior para ver los resultados.' 'Optimization finished. Check the log below for the results.')
 }
 
 function Invoke-OptUndo {
     $undoable = @($Optimizations | Where-Object { ($_.Values -or $_.Undo) -and (Test-HasBackup $_) })
-    if ($undoable.Count -eq 0) { Show-Info 'No hay ajustes aplicados por esta herramienta que deshacer.'; return }
+    if ($undoable.Count -eq 0) { Show-Info (L 'No hay ajustes aplicados por esta herramienta que deshacer.' 'There are no tweaks applied by this tool to undo.'); return }
     $names = ($undoable | ForEach-Object { '  • ' + $_.Name }) -join "`n"
-    if (-not (Confirm-Action "Se restaurarán los valores originales de:`n`n$names`n`n¿Continuar?" 'Deshacer ajustes')) { return }
+    if (-not (Confirm-Action (L "Se restaurarán los valores originales de:`n`n$names`n`n¿Continuar?" "The original values of the following will be restored:`n`n$names`n`nContinue?") (L 'Deshacer ajustes' 'Undo tweaks'))) { return }
     Set-Busy $true
-    Write-Log '===== Deshacer ajustes ====='
+    Write-Log (L '===== Deshacer ajustes =====' '===== Undo tweaks =====')
     foreach ($o in $undoable) {
-        Write-Log "Restaurando: $($o.Name)"
+        Write-Log ((L 'Restaurando: ' 'Restoring: ') + $o.Name)
         try {
             if ($o.Undo) { & $o.Undo }
-            else { $n = Undo-RegToggle $o; Write-Log "  $n valores restaurados." }
-        } catch { Write-Log "  Error: $($_.Exception.Message)" }
+            else { $n = Undo-RegToggle $o; Write-Log (L "  $n valores restaurados." "  $n values restored.") }
+        } catch { Write-Log ("  Error: " + $_.Exception.Message) }
     }
     Update-OptList
     Set-Busy $false
     Update-Info
     Update-Selection
-    Show-Info 'Ajustes restaurados. Algunos cambios visuales se aplican del todo al cerrar sesión.'
+    Show-Info (L 'Ajustes restaurados. Algunos cambios visuales se aplican del todo al cerrar sesión.' 'Tweaks restored. Some visual changes fully apply after signing out.')
 }
 
 # ---------- 4. Espacio
 $script:SpaceRoot = $null
-$script:SpaceSummary = 'Elige una carpeta para analizar.'
+$script:SpaceSummary = L 'Elige una carpeta para analizar.' 'Choose a folder to scan.'
 
 function Invoke-SpaceScan([string]$root) {
-    if (-not $root -or -not (Test-SafeRoot $root)) { Show-Info "No se puede analizar: $root"; return }
+    if (-not $root -or -not (Test-SafeRoot $root)) { Show-Info ((L 'No se puede analizar: ' 'Cannot scan: ') + $root); return }
     $script:SpaceRoot = $root
-    $lblSpPath.Text = "Carpeta: $root"
+    $lblSpPath.Text = (L 'Carpeta: ' 'Folder: ') + $root
     $script:Cancel = $false
     Set-Busy $true
     $btnCancel.Visible = $true
@@ -1505,11 +1594,11 @@ function Invoke-SpaceScan([string]$root) {
         if ($script:Cancel) { break }
         $i++
         $progress.Value = [int](100 * ($i - 1) / [math]::Max(1, $dirs.Count))
-        $lblStatus.Text = "Analizando: $($d.FullName)"
+        $lblStatus.Text = (L 'Analizando: ' 'Scanning: ') + $d.FullName
         [System.Windows.Forms.Application]::DoEvents()
         $rows += [pscustomobject]@{ Name = $d.Name; Path = $d.FullName; Size = (Measure-Tree $d.FullName $big) }
     }
-    if ($rootFiles -gt 0) { $rows += [pscustomobject]@{ Name = '(archivos sueltos en esta carpeta)'; Path = $null; Size = $rootFiles } }
+    if ($rootFiles -gt 0) { $rows += [pscustomobject]@{ Name = (L '(archivos sueltos en esta carpeta)' '(loose files in this folder)'); Path = $null; Size = $rootFiles } }
 
     $total = [long]0
     foreach ($r in $rows) { $total += $r.Size }
@@ -1538,8 +1627,8 @@ function Invoke-SpaceScan([string]$root) {
     $lvFiles.EndUpdate()
 
     $script:SpaceSummary = "$root · $(Format-Size $total)"
-    if ($script:Cancel) { $script:SpaceSummary += ' (análisis cancelado: resultados parciales)' }
-    Write-Log "Espacio: $script:SpaceSummary"
+    if ($script:Cancel) { $script:SpaceSummary += L ' (análisis cancelado: resultados parciales)' ' (scan cancelled: partial results)' }
+    Write-Log ((L 'Espacio: ' 'Disk space: ') + $script:SpaceSummary)
     $btnCancel.Visible = $false
     Set-Busy $false
     Update-Selection
@@ -1553,30 +1642,31 @@ function Open-Location([string]$path) {
 
 function Invoke-SpaceTrash {
     $sel = @($lvFiles.SelectedItems | ForEach-Object { $_ })
-    if ($sel.Count -eq 0) { Show-Info 'Selecciona uno o varios archivos en la lista de la derecha.'; return }
+    if ($sel.Count -eq 0) { Show-Info (L 'Selecciona uno o varios archivos en la lista de la derecha.' 'Select one or more files in the list on the right.'); return }
     $prot = @($sel | Where-Object { Test-Protected $_.Tag })
     $sel  = @($sel | Where-Object { -not (Test-Protected $_.Tag) })
-    if ($prot.Count -gt 0) { Write-Log "Se omiten $($prot.Count) archivos protegidos del sistema." }
-    if ($sel.Count -eq 0) { Show-Info 'Los archivos seleccionados pertenecen a Windows o a programas instalados y están protegidos.'; return }
+    if ($prot.Count -gt 0) { Write-Log (L "Se omiten $($prot.Count) archivos protegidos del sistema." "Skipping $($prot.Count) protected system files.") }
+    if ($sel.Count -eq 0) { Show-Info (L 'Los archivos seleccionados pertenecen a Windows o a programas instalados y están protegidos.' 'The selected files belong to Windows or installed programs and are protected.'); return }
     $names = ($sel | Select-Object -First 15 | ForEach-Object { '  • ' + $_.Text + '  (' + $_.SubItems[1].Text + ')' }) -join "`n"
-    if ($sel.Count -gt 15) { $names += "`n  ... y $($sel.Count - 15) más" }
-    if (-not (Confirm-Action "Se enviarán a la papelera $($sel.Count) archivos:`n`n$names`n`nPodrás recuperarlos desde la papelera. ¿Continuar?" 'Enviar a la papelera' 'Warning')) { return }
+    if ($sel.Count -gt 15) { $names += L "`n  ... y $($sel.Count - 15) más" "`n  ... and $($sel.Count - 15) more" }
+    $msg = L "Se enviarán a la papelera $($sel.Count) archivos:`n`n$names`n`nPodrás recuperarlos desde la papelera. ¿Continuar?" "$($sel.Count) files will be sent to the Recycle Bin:`n`n$names`n`nYou can restore them from the Recycle Bin. Continue?"
+    if (-not (Confirm-Action $msg (L 'Enviar a la papelera' 'Send to Recycle Bin') 'Warning')) { return }
     Set-Busy $true
     $ok = 0
     foreach ($it in $sel) {
         try {
             [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($it.Tag, 'OnlyErrorDialogs', 'SendToRecycleBin')
-            Write-Log "Enviado a la papelera: $($it.Tag)"
+            Write-Log ((L 'Enviado a la papelera: ' 'Sent to Recycle Bin: ') + $it.Tag)
             $lvFiles.Items.Remove($it)
             $ok++
         } catch {
-            Write-Log "  Error con $($it.Tag): $($_.Exception.Message)"
+            Write-Log ("  Error ($($it.Tag)): " + $_.Exception.Message)
         }
     }
     Set-Busy $false
     Update-Info
     Update-Selection
-    Show-Info "$ok archivos enviados a la papelera.`nRecuerda vaciar la papelera para liberar el espacio."
+    Show-Info (L "$ok archivos enviados a la papelera.`nRecuerda vaciar la papelera para liberar el espacio." "$ok files sent to the Recycle Bin.`nRemember to empty the Recycle Bin to free the space.")
 }
 
 # ================================================================ Eventos =====
@@ -1584,6 +1674,8 @@ $script:BloatLoaded = $false
 $script:SpaceLoaded = $false
 
 foreach ($lv in $list, $bloatList, $optList) { Add-CheckGuard $lv }
+
+$cmbLang.Add_SelectedIndexChanged({ Set-Language })
 
 $tabs.Add_Selecting({ param($s, $e) if ($script:Busy) { $e.Cancel = $true } })
 $tabs.Add_SelectedIndexChanged({
@@ -1609,8 +1701,8 @@ $lvFiles.Add_ItemSelectionChanged({
     param($s, $e)
     if ($e.IsSelected) {
         $p = $e.Item.Tag
-        $txt = "$p  ·  $($e.Item.SubItems[1].Text)  ·  modificado $($e.Item.SubItems[2].Text)"
-        if (Test-Protected $p) { $txt += '  ·  PROTEGIDO (archivo del sistema o de programas)' }
+        $txt = "$p  ·  $($e.Item.SubItems[1].Text)  ·  " + (L 'modificado ' 'modified ') + $e.Item.SubItems[2].Text
+        if (Test-Protected $p) { $txt += L '  ·  PROTEGIDO (archivo del sistema o de programas)' '  ·  PROTECTED (system or program file)' }
         $lblDesc.Text = $txt
     }
 })
@@ -1644,7 +1736,7 @@ $btnSpDownloads.Add_Click({ Invoke-SpaceScan (Get-DownloadsPath) })
 $btnSpDrive.Add_Click({ Invoke-SpaceScan ($SD + '\') })
 $btnSpPick.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'Elige la carpeta que quieres analizar'
+    $dlg.Description = L 'Elige la carpeta que quieres analizar' 'Choose the folder you want to scan'
     if ($script:SpaceRoot) { $dlg.SelectedPath = $script:SpaceRoot }
     if ($dlg.ShowDialog($form) -eq 'OK') { Invoke-SpaceScan $dlg.SelectedPath }
 })
@@ -1663,15 +1755,15 @@ $btnSpOpen.Add_Click({
 $btnSpTrash.Add_Click({ Invoke-SpaceTrash })
 $lvFolders.Add_DoubleClick({ if (-not $script:Busy -and $lvFolders.SelectedItems.Count -gt 0 -and $lvFolders.SelectedItems[0].Tag) { Invoke-SpaceScan $lvFolders.SelectedItems[0].Tag } })
 $lvFiles.Add_DoubleClick({ if ($lvFiles.SelectedItems.Count -gt 0) { Open-Location $lvFiles.SelectedItems[0].Tag } })
-$btnCancel.Add_Click({ $script:Cancel = $true; $btnCancel.Enabled = $false; $lblStatus.Text = 'Cancelando...' })
+$btnCancel.Add_Click({ $script:Cancel = $true; $btnCancel.Enabled = $false; $lblStatus.Text = L 'Cancelando...' 'Cancelling...' })
 
 $form.Add_Shown({
     $form.Activate()
     Show-TabButtons
     Update-Info
-    Write-Log "$AppName $AppVersion · $script:Machine · $script:RamGB GB RAM · Discos: $(Get-DiskSummary)"
-    if (-not $script:IsAdmin) { Write-Log 'Sin permisos de administrador: las opciones del sistema están desactivadas.' }
-    if ($script:OtherUser) { Write-Log "Ejecutando como administrador con otra cuenta: se limpia el perfil de $script:TargetName." }
+    Write-Log "$AppName $AppVersion · $script:Machine · $script:RamGB GB RAM · $(L 'Discos' 'Disks'): $(Get-DiskSummary)"
+    if (-not $script:IsAdmin) { Write-Log (L 'Sin permisos de administrador: las opciones del sistema están desactivadas.' 'No administrator rights: system options are disabled.') }
+    if ($script:OtherUser) { Write-Log (L "Ejecutando como administrador con otra cuenta: se limpia el perfil de $script:TargetName." "Running as administrator with another account: cleaning the profile of $script:TargetName.") }
     Update-OptList
     Invoke-Analyze
 })
