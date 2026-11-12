@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.2'
+$AppVersion = '1.3.3'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1270,11 +1270,31 @@ $header.Controls.Add($lblInfo)
 $header.Controls.Add($lblTitle)
 $header.Controls.Add($langPanel)
 
+# ---------- Pie: autor y enlace a su perfil
+$AuthorUrl = 'https://github.com/vicvinue'
+$footer = New-Object System.Windows.Forms.LinkLabel
+$footer.Dock = 'Bottom'
+$footer.Height = S 24
+$footer.TextAlign = 'MiddleCenter'
+$footer.BackColor = $BgColor
+$footer.ForeColor = [System.Drawing.Color]::Gray
+$footer.LinkColor = $Accent
+$footer.ActiveLinkColor = $Accent
+$footer.LinkBehavior = 'HoverUnderline'
+$fProfile = 'github.com/vicvinue'
+$fPrefix  = "$AppName $AppVersion  ·  " + (L 'Autor: ' 'Author: ') + 'vicvinue  ·  '
+$footer.Text = $fPrefix + $fProfile + '  ·  ' + (L 'Licencia MIT' 'MIT License')
+$footer.Links.Clear()
+[void]$footer.Links.Add($fPrefix.Length, $fProfile.Length, $AuthorUrl)
+# Se abre a través del Explorador para que el navegador no herede los permisos de administrador
+$footer.Add_LinkClicked({ param($s, $e) try { Start-Process -FilePath (Join-Path $env:SystemRoot 'explorer.exe') -ArgumentList ([string]$e.Link.LinkData) } catch { } })
+
 # Orden de acoplamiento: el control "Fill" se añade primero
 $form.Controls.Add($tabs)
 $form.Controls.Add($lblDesc)
 $form.Controls.Add($logBox)
 $form.Controls.Add($bottom)
+$form.Controls.Add($footer)
 $form.Controls.Add($header)
 
 # ================================================================ Lógica =====
