@@ -35,7 +35,7 @@ param(
     [string]$TargetTemp
 )
 
-$AppVersion = '1.3.4'
+$AppVersion = '1.3.5'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -105,6 +105,11 @@ if ($script:Lang -eq 'auto') {
 
 # Devuelve el texto en el idioma activo / Returns the text in the active language
 function L([string]$es, [string]$en) { if ($script:Lang -eq 'es') { return $es } else { return $en } }
+
+# Número con la palabra en singular o plural / Number with the word in singular or plural
+function Plural([int]$n, [string]$es1, [string]$esN, [string]$en1, [string]$enN) {
+    if ($n -eq 1) { return "$n " + (L $es1 $en1) } else { return "$n " + (L $esN $enN) }
+}
 
 $AppName = L 'Limpiador de Windows' 'Windows Cleaner'
 
@@ -1314,22 +1319,25 @@ function Update-Selection {
         'clean' {
             $sum = [long]0; $n = 0
             foreach ($it in @($list.Items | Where-Object { $_.Checked })) { $n++; if ($it.Tag.Bytes -gt 0) { $sum += $it.Tag.Bytes } }
-            $lblStatus.Text = L "Seleccionado: $n elementos · aprox. $(Format-Size $sum) a liberar" "Selected: $n items · approx. $(Format-Size $sum) to free"
+            $lblStatus.Text = (L 'Seleccionado: ' 'Selected: ') + (Plural $n 'elemento' 'elementos' 'item' 'items') + (L " · aprox. $(Format-Size $sum) a liberar" " · approx. $(Format-Size $sum) to free")
         }
         'bloat' {
             $n = @($bloatList.Items | Where-Object { $_.Checked }).Count
-            $lblStatus.Text = L "Seleccionadas: $n de $($bloatList.Items.Count) apps" "Selected: $n of $($bloatList.Items.Count) apps"
+            $lblStatus.Text = (L "Seleccionadas: $n de " "Selected: $n of ") + (Plural $bloatList.Items.Count 'app' 'apps' 'app' 'apps')
         }
         'opt' {
             $n = @($optList.Items | Where-Object { $_.Checked }).Count
-            $lblStatus.Text = L "Seleccionadas: $n acciones" "Selected: $n actions"
+            $lblStatus.Text = (L 'Seleccionadas: ' 'Selected: ') + (Plural $n 'acción' 'acciones' 'action' 'actions')
         }
         'space' {
             $lblStatus.Text = $script:SpaceSummary
         }
         'update' {
             $n = @($updList.Items | Where-Object { $_.Checked }).Count
-            $lblStatus.Text = L "Seleccionadas: $n de $($updList.Items.Count) actualizaciones" "Selected: $n of $($updList.Items.Count) updates"
+            # Las ignoradas no cuentan: no se actualizan aunque estén marcadas
+            $n = @($updList.Items | Where-Object { $_.Checked -and -not $_.Tag.Pinned }).Count
+            $tot = @($updList.Items | Where-Object { -not $_.Tag.Pinned }).Count
+            $lblStatus.Text = (L "Seleccionadas: $n de " "Selected: $n of ") + (Plural $tot 'actualización' 'actualizaciones' 'update' 'updates')
         }
     }
 }
@@ -1401,7 +1409,8 @@ function Invoke-Clean {
     $est = [long]0
     foreach ($it in $sel) { if ($it.Tag.Bytes -gt 0) { $est += $it.Tag.Bytes } }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n"
-    $msg = L "Se van a limpiar $($sel.Count) elementos (aprox. $(Format-Size $est)):`n`n$names`n`nLos archivos en uso se omitirán. ¿Continuar?" "$($sel.Count) items will be cleaned (approx. $(Format-Size $est)):`n`n$names`n`nFiles in use will be skipped. Continue?"
+    $cnt = Plural $sel.Count 'elemento' 'elementos' 'item' 'items'
+    $msg = L "Se va a limpiar: $cnt (aprox. $(Format-Size $est))`n`n$names`n`nLos archivos en uso se omitirán. ¿Continuar?" "To be cleaned: $cnt (approx. $(Format-Size $est))`n`n$names`n`nFiles in use will be skipped. Continue?"
     if (-not (Confirm-Action $msg (L 'Confirmar limpieza' 'Confirm cleanup'))) { return }
 
     Set-Busy $true
@@ -1474,7 +1483,7 @@ function Update-BloatList {
     foreach ($b in $items) { Add-LVItem $bloatList $bg $b.Group $b.Name @($b.Id, $b.Note) $b $b.Default $true }
     $bloatList.EndUpdate()
     $script:BloatLoaded = $true
-    Write-Log (L "Bloatware: $($items.Count) apps prescindibles encontradas." "Bloatware: $($items.Count) unnecessary apps found.")
+    Write-Log ('Bloatware: ' + (Plural $items.Count 'app prescindible encontrada' 'apps prescindibles encontradas' 'unnecessary app found' 'unnecessary apps found') + '.')
     Set-Busy $false
     Update-Selection
 }
@@ -1483,7 +1492,8 @@ function Invoke-BloatRemove {
     $sel = @($bloatList.Items | Where-Object { $_.Checked })
     if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna app seleccionada.' 'No app is selected.'); return }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name }) -join "`n"
-    $msg = L "Se van a desinstalar $($sel.Count) apps:`n`n$names`n`nSe pueden volver a instalar desde Microsoft Store. ¿Continuar?" "$($sel.Count) apps will be uninstalled:`n`n$names`n`nThey can be reinstalled from the Microsoft Store. Continue?"
+    $cnt = Plural $sel.Count 'app' 'apps' 'app' 'apps'
+    $msg = L "Se va a desinstalar: $cnt`n`n$names`n`nSe pueden volver a instalar desde Microsoft Store. ¿Continuar?" "To be uninstalled: $cnt`n`n$names`n`nThey can be reinstalled from the Microsoft Store. Continue?"
     if (-not (Confirm-Action $msg (L 'Confirmar desinstalación' 'Confirm uninstall') 'Warning')) { return }
 
     Set-Busy $true
@@ -1685,11 +1695,12 @@ function Invoke-SpaceTrash {
     if ($sel.Count -eq 0) { Show-Info (L 'Selecciona uno o varios archivos en la lista de la derecha.' 'Select one or more files in the list on the right.'); return }
     $prot = @($sel | Where-Object { Test-Protected $_.Tag })
     $sel  = @($sel | Where-Object { -not (Test-Protected $_.Tag) })
-    if ($prot.Count -gt 0) { Write-Log (L "Se omiten $($prot.Count) archivos protegidos del sistema." "Skipping $($prot.Count) protected system files.") }
+    if ($prot.Count -gt 0) { Write-Log ((L 'Se omite: ' 'Skipped: ') + (Plural $prot.Count 'archivo protegido del sistema' 'archivos protegidos del sistema' 'protected system file' 'protected system files') + '.') }
     if ($sel.Count -eq 0) { Show-Info (L 'Los archivos seleccionados pertenecen a Windows o a programas instalados y están protegidos.' 'The selected files belong to Windows or installed programs and are protected.'); return }
     $names = ($sel | Select-Object -First 15 | ForEach-Object { '  • ' + $_.Text + '  (' + $_.SubItems[1].Text + ')' }) -join "`n"
     if ($sel.Count -gt 15) { $names += L "`n  ... y $($sel.Count - 15) más" "`n  ... and $($sel.Count - 15) more" }
-    $msg = L "Se enviarán a la papelera $($sel.Count) archivos:`n`n$names`n`nPodrás recuperarlos desde la papelera. ¿Continuar?" "$($sel.Count) files will be sent to the Recycle Bin:`n`n$names`n`nYou can restore them from the Recycle Bin. Continue?"
+    $cnt = Plural $sel.Count 'archivo' 'archivos' 'file' 'files'
+    $msg = L "Se enviará a la papelera: $cnt`n`n$names`n`nPodrás recuperarlo desde la papelera. ¿Continuar?" "To be sent to the Recycle Bin: $cnt`n`n$names`n`nYou can restore it from the Recycle Bin. Continue?"
     if (-not (Confirm-Action $msg (L 'Enviar a la papelera' 'Send to Recycle Bin') 'Warning')) { return }
     Set-Busy $true
     $ok = 0
@@ -1706,7 +1717,7 @@ function Invoke-SpaceTrash {
     Set-Busy $false
     Update-Info
     Update-Selection
-    Show-Info (L "$ok archivos enviados a la papelera.`nRecuerda vaciar la papelera para liberar el espacio." "$ok files sent to the Recycle Bin.`nRemember to empty the Recycle Bin to free the space.")
+    Show-Info ((Plural $ok 'archivo enviado a la papelera' 'archivos enviados a la papelera' 'file sent to the Recycle Bin' 'files sent to the Recycle Bin') + (L ".`nRecuerda vaciar la papelera para liberar el espacio." ".`nRemember to empty the Recycle Bin to free the space."))
 }
 
 # ---------- 5. Actualizaciones (winget)
@@ -1866,9 +1877,15 @@ function Update-UpdList {
         Add-LVItem $updList $ug $grp $u.Name @($ver, $u.Available, $u.Id) $u $u.Default $true
     }
     $updList.EndUpdate()
-    $msg = L "winget: $($items.Count) actualizaciones disponibles." "winget: $($items.Count) updates available."
-    if ($pinned.Count -gt 0) { $msg += L " Ignoradas: $($pinned.Count)." " Ignored: $($pinned.Count)." }
-    Write-Log $msg
+    # Resumen por grupos, igual que en la lista
+    $nNormal   = @($items | Where-Object { -not $_.Explicit -and -not $_.Unknown }).Count
+    $nUnknown  = @($items | Where-Object { -not $_.Explicit -and $_.Unknown }).Count
+    $nExplicit = @($items | Where-Object { $_.Explicit }).Count
+    $parts = @('winget: ' + (Plural $nNormal 'actualización disponible' 'actualizaciones disponibles' 'update available' 'updates available'))
+    if ($nUnknown)      { $parts += Plural $nUnknown 'de versión desconocida' 'de versión desconocida' 'with unknown version' 'with unknown version' }
+    if ($nExplicit)     { $parts += Plural $nExplicit 'solo si se pide expresamente' 'solo si se piden expresamente' 'only if explicitly requested' 'only if explicitly requested' }
+    if ($pinned.Count)  { $parts += Plural $pinned.Count 'ignorada' 'ignoradas' 'ignored' 'ignored' }
+    Write-Log (($parts -join ' · ') + '.')
     Set-Busy $false
     Update-Selection
 }
@@ -1877,7 +1894,8 @@ function Invoke-UpdRun {
     $sel = @($updList.Items | Where-Object { $_.Checked -and -not $_.Tag.Pinned })
     if ($sel.Count -eq 0) { Show-Info (L 'No hay ninguna actualización seleccionada (las apps ignoradas no se actualizan).' 'No update is selected (ignored apps are not updated).'); return }
     $names = ($sel | ForEach-Object { '  • ' + $_.Tag.Name + '  →  ' + $_.Tag.Available }) -join "`n"
-    $msg = L "Se van a actualizar $($sel.Count) apps:`n`n$names`n`nGuarda tu trabajo: los instaladores pueden cerrar estas apps si están abiertas. ¿Continuar?" "$($sel.Count) apps will be updated:`n`n$names`n`nSave your work: the installers may close these apps if they are open. Continue?"
+    $cnt = Plural $sel.Count 'app' 'apps' 'app' 'apps'
+    $msg = L "Se va a actualizar: $cnt`n`n$names`n`nGuarda tu trabajo: los instaladores pueden cerrar las apps que estén abiertas. ¿Continuar?" "To be updated: $cnt`n`n$names`n`nSave your work: the installers may close apps that are open. Continue?"
     if (-not (Confirm-Action $msg (L 'Confirmar actualización' 'Confirm update'))) { return }
 
     Set-Busy $true
@@ -1931,7 +1949,13 @@ function Invoke-UpdRun {
             }
         } catch { Write-Log ('  Error: ' + $_.Exception.Message) }
 
-        if ($r -and $r.Code -in 0, 3010, 1641) {
+        # 0x8A15002B: no hay actualización aplicable. Suele pasar si la app se actualizó sola (p. ej. Chrome)
+        # después de cargar la lista: no es un error.
+        if ($r -and $r.Code -eq -1978335189) {
+            Write-Log (L '  Ya estaba al día: no había ninguna actualización que aplicar.' '  Already up to date: there was no update to apply.')
+            $updList.Items.Remove($it)
+            $ok++
+        } elseif ($r -and $r.Code -in 0, 3010, 1641) {
             if ($r.Code -ne 0) { $reboot = $true; Write-Log (L '  OK (requiere reiniciar)' '  OK (restart required)') } else { Write-Log '  OK' }
             if ($u.Unknown) { Write-Log (L '  Nota: el instalador de esta app no indica su versión a Windows, así que winget seguirá ofreciéndola. Si vuelve a aparecer, márcala y pulsa "Ignorar / restaurar".' '  Note: this app''s installer does not report its version to Windows, so winget will keep offering it. If it shows up again, check it and click "Ignore / restore".') }
             $updList.Items.Remove($it)
